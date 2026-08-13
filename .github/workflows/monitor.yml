@@ -2,10 +2,9 @@ name: bitget-cfd-monitor
 
 on:
   schedule:
-    # GitHub throttles scheduled runs heavily — the sibling Bybit monitor saw a
-    # */5 cron fire every 67 minutes on average. The job holds its slot and polls
-    # itself for 50 minutes, so this cron only has to restart it.
-    - cron: '*/5 * * * *'
+    # Only has to keep one run queued behind the active one; the job itself
+    # polls for 5.5 hours. */20 is plenty given GitHub fires these late anyway.
+    - cron: '*/20 * * * *'
   workflow_dispatch:
     inputs:
       test:
@@ -34,7 +33,7 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 70
+    timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4
 
@@ -63,7 +62,13 @@ jobs:
           MY_EQUITY_AT: ${{ vars.MY_EQUITY_AT }}
           TEST_ALERT: ${{ (inputs.test == true || inputs.test_critical == true) && '1' || '' }}
           TEST_CRITICAL: ${{ inputs.test_critical == true && '1' || '' }}
-          LOOP_MINUTES: ${{ (inputs.test == true || inputs.test_critical == true) && '0' || '50' }}
+          # Actions minutes are unlimited on a public repo, so each run holds
+          # its slot for 5.5 hours instead of 50 minutes. GitHub's cron is
+          # unreliable — the sibling monitor saw gaps up to 159 minutes — and a
+          # 50-minute loop leaves real holes between runs. A loop longer than any
+          # observed gap means the queued run starts the moment this one ends, so
+          # coverage stays continuous through the hours you are asleep.
+          LOOP_MINUTES: ${{ (inputs.test == true || inputs.test_critical == true) && '0' || '330' }}
         run: node monitor_ci.js
 
       - name: Save state
