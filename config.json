@@ -3,7 +3,9 @@
  "portfolioId": "1423679390962597888",
 
  "myEquity": 0,
- "ratioWarnMargin": 0.12,
+ "myEquityAt": null,
+ "cliffWarnDays": 14,
+ "rateMinDays": 2,
 
  "ladderMinLegs": 3,
  "ladderMinSpread": 15,

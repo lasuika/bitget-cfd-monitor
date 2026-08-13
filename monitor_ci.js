@@ -163,14 +163,38 @@ async function check(state) {
            `他 95% 的單是 0.01 手,乘上你的比例後無條件捨去成 0。\n` +
            `現在完全沒有在跟單。\n\n` +
            `補 $${n(topUpTo(1.05))} → 回到 1.05x(效率 95%)` });
-    } else if (toNextFloor < CFG.ratioWarnMargin) {
-      alerts.push({ key: `cliff-warn-${step}`, p: 'high', tags: 'warning',
-        t: `🟡 跟單比例 ${n(ratio, 3)}x — 快掉一階`,
-        b: `你目前每筆跟 ${n(myLot)} 手。\n` +
-           `跌破 ${step}.00x 會掉到 ${n((step - 1) / 100)} 手` +
-           (step === 1 ? '(= 完全跟不到)' : `(砍 ${n((1 / step) * 100, 0)}%)`) + `\n\n` +
-           `他的權益 $${n(eq)} 還在漲,比例會繼續掉。\n` +
-           `補 $${n(topUpTo(step + 0.05))} → 回到 ${step}.05x` });
+    } else {
+      // A static margin is the wrong trigger: 12% headroom is seven weeks of
+      // warning at his current pace, which just teaches you to ignore the alert.
+      // Warn on TIME instead, using his observed rate.
+      //
+      // The gap closes for a mechanical reason: you mirror his lots, so you earn
+      // what he earns, but the 20% profit share is taken from your side only.
+      // At step lots the gap therefore shrinks by (1 - 0.8 x step/step) of his
+      // gain — 20% of it — every day he makes money.
+      const hist = state.eqHist || [];
+      hist.push({ t: now, eq });
+      state.eqHist = hist.filter((h) => now - h.t < 21 * 864e5);
+
+      let daysLeft = null;
+      const oldest = state.eqHist[0];
+      const spanDays = oldest ? (now - oldest.t) / 864e5 : 0;
+      if (spanDays >= CFG.rateMinDays && eq > oldest.eq) {
+        const hisDaily = (eq - oldest.eq) / spanDays;
+        const closingPerDay = 0.2 * hisDaily * step;
+        if (closingPerDay > 0) daysLeft = (myEqNow - eq * step) / closingPerDay;
+      }
+
+      if (daysLeft != null && daysLeft < CFG.cliffWarnDays) {
+        alerts.push({ key: `cliff-warn-${step}`, p: 'high', tags: 'warning',
+          t: `🟡 約 ${n(daysLeft, 0)} 天後掉一階`,
+          b: `目前 ${n(ratio, 3)}x,每筆跟 ${n(myLot)} 手。\n` +
+             `跌破 ${step}.00x 會掉到 ${n((step - 1) / 100)} 手` +
+             (step === 1 ? '(= 完全跟不到單)' : `(砍 ${n((1 / step) * 100, 0)}%)`) + `\n\n` +
+             `依他近 ${n(spanDays, 0)} 天的實際速度推算。\n` +
+             `補 $${n(topUpTo(step + 0.15))} → 回到 ${step}.15x,可再撐一段。` });
+      }
+      state.daysLeft = daysLeft;
     }
 
     // Idle capital is silent — surface it rather than letting it sit unnoticed.
@@ -260,7 +284,7 @@ async function check(state) {
   if (state.wasQuiet) state.quietPeakH = Math.max(state.quietPeakH || 0, quietH);
 
   state.lastEquity = eq;
-  return { alerts, eq, open, gold, quietH,
+  return { alerts, eq, open, gold, quietH, daysLeft: state.daysLeft,
     ratio: MY_EQUITY > 0 ? (state.myEqEstimate || MY_EQUITY) / eq : null,
     myEq: state.myEqEstimate || MY_EQUITY };
 }
@@ -301,6 +325,7 @@ async function check(state) {
     if (r) {
       log({ pass, eq: r.eq, myEq: r.myEq ? +r.myEq.toFixed(2) : null, open: r.open.length, gold: r.gold,
         ratio: r.ratio ? +r.ratio.toFixed(4) : null, quietH: +r.quietH.toFixed(1),
+        daysLeft: r.daysLeft != null ? +r.daysLeft.toFixed(1) : null,
         alerts: r.alerts.map((a) => a.key) });
 
       const sent = state.sent || {};
