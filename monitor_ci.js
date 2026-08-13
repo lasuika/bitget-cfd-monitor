@@ -147,13 +147,17 @@ function pushover(title, body, { critical = false, url = null } = {}) {
 
 // Fire-and-forget, rate-limited, and never allowed to disturb the monitor.
 let lastBeat = 0;
-function heartbeat(force = false) {
+// A '/fail' suffix deliberately marks the check down, which is the only way to
+// exercise the down-notification path end to end without waiting an hour for a
+// real outage. The URL itself never leaves the workflow.
+function heartbeat(force = false, suffix = '') {
   if (!HEALTHCHECK_URL) return Promise.resolve(false);
   const gap = (CFG.heartbeatMin ?? 10) * 60000;
-  if (!force && Date.now() - lastBeat < gap) return Promise.resolve(null);
-  lastBeat = Date.now();
+  if (!suffix && !force && Date.now() - lastBeat < gap) return Promise.resolve(null);
+  if (!suffix) lastBeat = Date.now();
+  const url = HEALTHCHECK_URL.replace(/\/$/, '') + suffix;
   return new Promise((resolve) => {
-    const req = https.request(HEALTHCHECK_URL, { method: 'GET', timeout: 8000 }, (res) => {
+    const req = https.request(url, { method: 'GET', timeout: 8000 }, (res) => {
       res.resume(); res.on('end', () => resolve(res.statusCode < 300));
     });
     req.on('error', (e) => { log({ heartbeatError: e.message }); resolve(false); });
@@ -401,6 +405,19 @@ async function check(state) {
 // --- loop ---------------------------------------------------------------
 (async () => {
   const state = loadState();
+
+  // Drive the dead man's switch through a full down/up cycle so both
+  // notifications actually land, rather than trusting that they would.
+  if (process.env.TEST_HEALTHCHECK === '1') {
+    if (!HEALTHCHECK_URL) { log({ healthcheckTest: 'HEALTHCHECK_URL 未設定' }); return; }
+    const down = await heartbeat(true, '/fail');
+    log({ step: '1/2 送出 DOWN(應觸發「監控死亡」通知)', ok: down });
+    await sleep(45000);
+    const up = await heartbeat(true);
+    log({ step: '2/2 送出 UP(應觸發「已恢復」通知)', ok: up });
+    log({ healthcheckTestDone: true, down, up });
+    return;
+  }
 
   if (TEST_ALERT) {
     const crit = process.env.TEST_CRITICAL === '1';
