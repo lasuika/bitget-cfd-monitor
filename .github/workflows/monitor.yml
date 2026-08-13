@@ -2,8 +2,11 @@ name: bitget-cfd-monitor
 
 on:
   schedule:
-    # Only has to keep one run queued behind the active one; the job itself
-    # polls for 5.5 hours. */20 is plenty given GitHub fires these late anyway.
+    # GitHub's scheduler is not something to lean on. This repo produced zero
+    # schedule events in the first hour after going live, and the sibling
+    # monitor saw a */5 cron fire every 67 minutes on average with gaps up to
+    # 159. The monitor job below covers ~22 hours by itself, so this only has to
+    # land once a day rather than every few hours.
     - cron: '*/20 * * * *'
   workflow_dispatch:
     inputs:
@@ -23,17 +26,15 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  # A one-off test must not sit in the queue behind the 50-minute loop.
-  group: >-
-    ${{ (inputs.test == true || inputs.test_critical == true)
-        && format('oneoff-{0}', github.run_id) || 'cfd-monitor' }}
-  cancel-in-progress: false
-
 jobs:
-  check:
+  # Notification test, kept in its own job so it never queues behind the
+  # 22-hour monitoring run — and so it fires once rather than once per leg.
+  test:
+    if: inputs.test == true || inputs.test_critical == true
     runs-on: ubuntu-latest
-    timeout-minutes: 350
+    timeout-minutes: 10
+    concurrency:
+      group: cfd-test-${{ github.run_id }}
     steps:
       - uses: actions/checkout@v4
 
@@ -41,11 +42,50 @@ jobs:
         with:
           node-version: 22
 
+      - name: Send test
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          PUSHOVER_TOKEN: ${{ secrets.PUSHOVER_TOKEN }}
+          PUSHOVER_USER: ${{ secrets.PUSHOVER_USER }}
+          HEALTHCHECK_URL: ${{ secrets.HEALTHCHECK_URL }}
+          TEST_ALERT: '1'
+          TEST_CRITICAL: ${{ inputs.test_critical == true && '1' || '' }}
+          LOOP_MINUTES: '0'
+        run: node monitor_ci.js
+
+  # Four 5.5-hour legs run back to back: max-parallel 1 makes a matrix
+  # sequential, so one trigger yields ~22 hours of unbroken coverage. A single
+  # job is capped at 6 hours; a workflow is not, which is what makes this work.
+  #
+  # fail-fast is off deliberately — a crash in leg 2 must not take the rest of
+  # the day's coverage with it.
+  monitor:
+    if: github.event_name == 'schedule' || (inputs.test != true && inputs.test_critical != true)
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    concurrency:
+      group: cfd-monitor
+      cancel-in-progress: false
+    strategy:
+      max-parallel: 1
+      fail-fast: false
+      matrix:
+        leg: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Alert de-duplication, the equity anchor and his equity history all live
+      # in state.json. Losing it re-fires alerts you have already dismissed, so
+      # each leg picks up the newest snapshot any earlier leg wrote.
       - name: Restore state
         uses: actions/cache/restore@v4
         with:
           path: state.json
-          key: cfd-state-${{ github.run_id }}
+          key: cfd-state-${{ github.run_id }}-${{ matrix.leg }}
           restore-keys: |
             cfd-state-
 
@@ -53,7 +93,6 @@ jobs:
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           # Emergency channel — the only one that re-sends until acknowledged.
-          # Absent, the monitor still runs but on ntfy alone.
           PUSHOVER_TOKEN: ${{ secrets.PUSHOVER_TOKEN }}
           PUSHOVER_USER: ${{ secrets.PUSHOVER_USER }}
           # Dead man's switch — an outside service that shouts when these pings
@@ -63,15 +102,7 @@ jobs:
           # Variables after depositing. The dispatch input overrides it ad hoc.
           MY_EQUITY: ${{ inputs.my_equity != '' && inputs.my_equity || vars.MY_EQUITY }}
           MY_EQUITY_AT: ${{ vars.MY_EQUITY_AT }}
-          TEST_ALERT: ${{ (inputs.test == true || inputs.test_critical == true) && '1' || '' }}
-          TEST_CRITICAL: ${{ inputs.test_critical == true && '1' || '' }}
-          # Actions minutes are unlimited on a public repo, so each run holds
-          # its slot for 5.5 hours instead of 50 minutes. GitHub's cron is
-          # unreliable — the sibling monitor saw gaps up to 159 minutes — and a
-          # 50-minute loop leaves real holes between runs. A loop longer than any
-          # observed gap means the queued run starts the moment this one ends, so
-          # coverage stays continuous through the hours you are asleep.
-          LOOP_MINUTES: ${{ (inputs.test == true || inputs.test_critical == true) && '0' || '330' }}
+          LOOP_MINUTES: '330'
         run: node monitor_ci.js
 
       - name: Save state
@@ -79,4 +110,4 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: state.json
-          key: cfd-state-${{ github.run_id }}
+          key: cfd-state-${{ github.run_id }}-${{ matrix.leg }}
