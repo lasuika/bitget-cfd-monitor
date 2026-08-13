@@ -1,0 +1,7 @@
+{
+  "name": "bitget-cfd-monitor",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Cloud monitor for a Bitget CFD gold copy-trading leader",
+  "main": "monitor_ci.js"
+}

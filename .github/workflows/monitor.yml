@@ -1,0 +1,63 @@
+name: bitget-cfd-monitor
+
+on:
+  schedule:
+    # GitHub throttles scheduled runs heavily — the sibling Bybit monitor saw a
+    # */5 cron fire every 67 minutes on average. The job holds its slot and polls
+    # itself for 50 minutes, so this cron only has to restart it.
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+    inputs:
+      test:
+        description: 'Send a test phone notification only'
+        type: boolean
+        default: false
+      my_equity:
+        description: 'Override your CFD equity for this run (0 = use variable)'
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  # A one-off test must not sit in the queue behind the 50-minute loop.
+  group: >-
+    ${{ inputs.test == true && format('oneoff-{0}', github.run_id) || 'cfd-monitor' }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Restore state
+        uses: actions/cache/restore@v4
+        with:
+          path: state.json
+          key: cfd-state-${{ github.run_id }}
+          restore-keys: |
+            cfd-state-
+
+      - name: Run monitor
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          # Set MY_EQUITY under Settings > Secrets and variables > Actions >
+          # Variables after depositing. The dispatch input overrides it ad hoc.
+          MY_EQUITY: ${{ inputs.my_equity != '' && inputs.my_equity || vars.MY_EQUITY }}
+          TEST_ALERT: ${{ inputs.test == true && '1' || '' }}
+          LOOP_MINUTES: ${{ inputs.test == true && '0' || '50' }}
+        run: node monitor_ci.js
+
+      - name: Save state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: state.json
+          key: cfd-state-${{ github.run_id }}

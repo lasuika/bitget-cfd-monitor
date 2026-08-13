@@ -1,0 +1,23 @@
+{
+ "name": "ManuGoldPrime (XAUUSD)",
+ "portfolioId": "1423679390962597888",
+
+ "myEquity": 0,
+ "ratioWarn": 1.15,
+
+ "ladderMinLegs": 3,
+ "ladderMinSpread": 15,
+ "staleHours": 3,
+ "quietHours": 12,
+ "cooldownMin": 60,
+
+ "pollOpenSec": 45,
+ "pollActiveSec": 120,
+ "pollIdleSec": 300,
+ "pollDeadSec": 900,
+
+ "activeHoursUtc": [0, 1, 7, 8, 9, 11, 12, 13, 14, 16, 17, 18, 19, 20, 22, 23],
+ "deadHoursUtc": [3, 4, 5, 21],
+
+ "_measured": "activeHoursUtc 涵蓋他 87% 的開單;deadHoursUtc 各佔 <1%(21:00 為 0 筆);週六 0 筆(黃金休市)"
+}
