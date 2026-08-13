@@ -2,12 +2,13 @@ name: bitget-cfd-monitor
 
 on:
   schedule:
-    # GitHub's scheduler is not something to lean on. This repo produced zero
-    # schedule events in the first hour after going live, and the sibling
-    # monitor saw a */5 cron fire every 67 minutes on average with gaps up to
-    # 159. The monitor job below covers ~22 hours by itself, so this only has to
-    # land once a day rather than every few hours.
-    - cron: '*/20 * * * *'
+    # Every 3 hours, not every 20 minutes. Only ONE run may sit pending per
+    # concurrency group, so each new trigger cancels the one waiting — at */20
+    # that is ~71 pointless cancellations a day, each a small window in which
+    # the hand-off could land badly. The monitor job covers ~22 hours on its
+    # own, so eight tries a day is already generous redundancy against
+    # GitHub's scheduler, which took ~75 minutes to fire here at all.
+    - cron: '0 */3 * * *'
   workflow_dispatch:
     inputs:
       test:
