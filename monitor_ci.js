@@ -102,23 +102,48 @@ async function check(state) {
   const eq = +perf.totalEquity;
   const lastOrder = +perf.lastOrderTime;
 
-  // 1. equity cliff — 95% of his trades are 0.01 lots, the MT5 minimum, and
-  //    copier lots round DOWN. Under 1.0x they become zero and stop copying.
+  // 1. equity cliffs. 95% of his trades are 0.01 lots — the MT5 minimum — and
+  //    copier lots round DOWN, so your size for one of his 0.01-lot entries is
+  //    floor(ratio)/100. That makes EVERY integer ratio a cliff, not just 1.0:
+  //    slipping from 2.00x to 1.99x halves your size, and below 1.00x you stop
+  //    copying his 0.01-lot trades entirely. It also means capital between two
+  //    integers buys no extra size at all — at 1.5x you hold exactly what you
+  //    would at 1.0x, with a third of the money idle.
+  //
+  //    The ratio decays on its own: the 20% profit share comes out of your side,
+  //    so your equity compounds slower than his even when copying perfectly.
   if (MY_EQUITY > 0 && eq > 0) {
     const ratio = MY_EQUITY / eq;
+    const step = Math.floor(ratio);          // integer multiple currently held
+    const myLot = step / 100;                // your size for his 0.01 lots
+    const toNextFloor = ratio - step;        // headroom before size drops
+    const topUpTo = (r) => eq * r - MY_EQUITY;
+
     if (ratio < 1.0) {
       alerts.push({ key: 'cliff-below', p: 'urgent', tags: 'rotating_light',
         t: '🔴 跌破跟單門檻 — 你已經跟不到單',
         b: `你 $${n(MY_EQUITY)} ÷ 他 $${n(eq)} = ${n(ratio, 4)}x\n\n` +
            `他 95% 的單是 0.01 手,乘上你的比例後無條件捨去成 0。\n` +
-           `補足 $${n(eq - MY_EQUITY)} 才能恢復完整跟單。\n` +
-           `(補到 1.3x 需要 $${n(eq * 1.3 - MY_EQUITY)})` });
-    } else if (ratio < CFG.ratioWarn) {
-      alerts.push({ key: 'cliff-warn', p: 'high', tags: 'warning',
-        t: `🟡 跟單比例 ${n(ratio, 3)}x — 逼近門檻`,
-        b: `他的權益 $${n(eq)} 還在漲,你的比例會繼續掉。\n` +
-           `跌破 1.0x 就完全跟不到單。\n` +
-           `補到 1.3x 需要 $${n(eq * 1.3 - MY_EQUITY)}。` });
+           `現在完全沒有在跟單。\n\n` +
+           `補 $${n(topUpTo(1.05))} → 回到 1.05x(效率 95%)` });
+    } else if (toNextFloor < CFG.ratioWarnMargin) {
+      alerts.push({ key: `cliff-warn-${step}`, p: 'high', tags: 'warning',
+        t: `🟡 跟單比例 ${n(ratio, 3)}x — 快掉一階`,
+        b: `你目前每筆跟 ${n(myLot)} 手。\n` +
+           `跌破 ${step}.00x 會掉到 ${n((step - 1) / 100)} 手` +
+           (step === 1 ? '(= 完全跟不到)' : `(砍 ${n((1 / step) * 100, 0)}%)`) + `\n\n` +
+           `他的權益 $${n(eq)} 還在漲,比例會繼續掉。\n` +
+           `補 $${n(topUpTo(step + 0.05))} → 回到 ${step}.05x` });
+    }
+
+    // Idle capital is silent — surface it rather than letting it sit unnoticed.
+    const eff = step / ratio;
+    if (step >= 1 && eff < 0.8) {
+      alerts.push({ key: `ineff-${step}`, p: 'low', tags: 'money_with_wings',
+        t: `💤 資金效率只有 ${n(eff * 100, 0)}%`,
+        b: `${n(ratio, 3)}x 和 ${step}.0x 的手數一樣(都是 ${n(myLot)} 手)。\n` +
+           `目前約 $${n(MY_EQUITY - eq * step)} 沒有在工作。\n\n` +
+           `想提高倉位要補到 ${step + 1}.0x = 再加 $${n(topUpTo(step + 1))}。` });
     }
   }
 
