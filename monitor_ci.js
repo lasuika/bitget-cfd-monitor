@@ -44,7 +44,20 @@ const MY_EQUITY = +(process.env.MY_EQUITY || CFG.myEquity || 0);
 const MY_EQUITY_AT = process.env.MY_EQUITY_AT || CFG.myEquityAt || null;
 
 const n = (v, d = 2) => (v == null || !Number.isFinite(+v) ? '—' : (+v).toFixed(d));
-const log = (o) => console.log(JSON.stringify({ t: new Date().toISOString(), ...o }));
+
+// Actions logs are public on a public repo, and unlimited Actions minutes are
+// the only way to keep this running around the clock. So the run log must not
+// carry your balance. Alert bodies still hold the real numbers — those go to
+// ntfy and Bark, which are private.
+const VERBOSE = process.env.VERBOSE === '1';
+const REDACT = new Set(['myEq', 'ratio', 'daysLeft']);
+function log(o) {
+  const out = { t: new Date().toISOString() };
+  for (const [k, v] of Object.entries(o)) {
+    out[k] = !VERBOSE && REDACT.has(k) && v != null ? '***' : v;
+  }
+  console.log(JSON.stringify(out));
+}
 
 const loadState = () => { try { return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); } catch { return {}; } };
 const saveState = (s) => fs.writeFileSync(STATE_FILE, JSON.stringify(s, null, 1));
@@ -132,7 +145,7 @@ async function notify(title, body, priority = 'default', tags = '', critical = f
     ntfy(title, full, critical ? 'max' : priority, tags),
     critical || BARK_ALL ? bark(title, full, { critical, url: TRADER_URL }) : Promise.resolve(null),
   ]);
-  log({ sent: title, ntfy: n1, bark: n2, critical });
+  log({ sent: VERBOSE ? title : '(內容僅送推播)', ntfy: n1, bark: n2, critical });
 }
 
 function pub(p) {
