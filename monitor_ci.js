@@ -31,6 +31,13 @@ const NTFY_TOPIC = process.env.NTFY_TOPIC || CFG.ntfyTopic;
 // the part that matters when the alert lands at 3am.
 const PO_TOKEN = process.env.PUSHOVER_TOKEN || '';
 const PO_USER = process.env.PUSHOVER_USER || '';
+// Dead man's switch. Every alert path in here assumes this process is running;
+// if it stops — GitHub's scheduler skips, the workflow errors, Actions gets
+// disabled after 60 days of repo inactivity — the result is silence, and
+// silence is indistinguishable from a quiet market. So we ping an outside
+// service on a heartbeat and let IT shout when the pings stop. It has to be
+// external: anything hosted here dies in the same failure.
+const HEALTHCHECK_URL = process.env.HEALTHCHECK_URL || '';
 const LOOP_MINUTES = +(process.env.LOOP_MINUTES ?? 50);
 const TEST_ALERT = !!process.env.TEST_ALERT;
 // Your CFD equity, as of MY_EQUITY_AT. Kept in a workflow variable so it can be
@@ -138,6 +145,23 @@ function pushover(title, body, { critical = false, url = null } = {}) {
   });
 }
 
+// Fire-and-forget, rate-limited, and never allowed to disturb the monitor.
+let lastBeat = 0;
+function heartbeat(force = false) {
+  if (!HEALTHCHECK_URL) return Promise.resolve(false);
+  const gap = (CFG.heartbeatMin ?? 10) * 60000;
+  if (!force && Date.now() - lastBeat < gap) return Promise.resolve(null);
+  lastBeat = Date.now();
+  return new Promise((resolve) => {
+    const req = https.request(HEALTHCHECK_URL, { method: 'GET', timeout: 8000 }, (res) => {
+      res.resume(); res.on('end', () => resolve(res.statusCode < 300));
+    });
+    req.on('error', (e) => { log({ heartbeatError: e.message }); resolve(false); });
+    req.on('timeout', () => { req.destroy(); resolve(false); });
+    req.end();
+  });
+}
+
 const TRADER_URL = `https://www.bitget.com/copy-trading/cfd-trader/${CFG.portfolioId}`;
 
 // Emergencies go out on both channels — if one is down you still get told.
@@ -220,6 +244,14 @@ async function check(state) {
   }
 
   if (MY_EQUITY > 0 && eq > 0) {
+    // Sample his equity hourly, not every poll: at a 45-second cadence a
+    // per-poll push would put ~40,000 entries in state.json inside the 21-day
+    // window, for no extra signal. Sampled here rather than inside a branch so
+    // it keeps accruing even below 1.0x, which is when the rate matters most.
+    const hist = (state.eqHist || []).filter((h) => now - h.t < 21 * 864e5);
+    if (!hist.length || now - hist[hist.length - 1].t > 36e5) hist.push({ t: now, eq });
+    state.eqHist = hist;
+
     // Use the projection for the cliff maths — a stale snapshot would keep
     // reporting a ratio you no longer have.
     const myEqNow = state.myEqEstimate || MY_EQUITY;
@@ -229,6 +261,7 @@ async function check(state) {
     const toNextFloor = ratio - step;        // headroom before size drops
     const topUpTo = (r) => eq * r - myEqNow;
 
+    state.daysLeft = null;
     if (ratio < 1.0) {
       alerts.push({ key: 'cliff-below', p: 'urgent', tags: 'rotating_light',
         t: '🔴 跌破跟單門檻 — 你已經跟不到單',
@@ -245,10 +278,6 @@ async function check(state) {
       // what he earns, but the 20% profit share is taken from your side only.
       // At step lots the gap therefore shrinks by (1 - 0.8 x step/step) of his
       // gain — 20% of it — every day he makes money.
-      const hist = state.eqHist || [];
-      hist.push({ t: now, eq });
-      state.eqHist = hist.filter((h) => now - h.t < 21 * 864e5);
-
       let daysLeft = null;
       const oldest = state.eqHist[0];
       const spanDays = oldest ? (now - oldest.t) / 864e5 : 0;
@@ -380,8 +409,10 @@ async function check(state) {
         ? `這是緊急通道測試。\n真實情況下代表加碼梯浮虧過大或部位無人看管。\n${new Date().toISOString()}`
         : `ManuGoldPrime 監控運作正常。\n${new Date().toISOString()}`,
       'default', 'white_check_mark', crit);
+    const beat = await heartbeat(true);
     log({ testAlertSent: true, critical: crit,
-      channels: { ntfy: !!NTFY_TOPIC, pushover: !!(PO_TOKEN && PO_USER) } });
+      channels: { ntfy: !!NTFY_TOPIC, pushover: !!(PO_TOKEN && PO_USER),
+        heartbeat: HEALTHCHECK_URL ? beat : false } });
     return;
   }
 
@@ -408,6 +439,7 @@ async function check(state) {
     }
 
     if (r) {
+      await heartbeat();
       log({ pass, eq: r.eq, myEq: r.myEq ? +r.myEq.toFixed(2) : null, open: r.open.length, gold: r.gold,
         ratio: r.ratio ? +r.ratio.toFixed(4) : null, quietH: +r.quietH.toFixed(1),
         daysLeft: r.daysLeft != null ? +r.daysLeft.toFixed(1) : null,

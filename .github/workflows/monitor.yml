@@ -56,6 +56,9 @@ jobs:
           # Absent, the monitor still runs but on ntfy alone.
           PUSHOVER_TOKEN: ${{ secrets.PUSHOVER_TOKEN }}
           PUSHOVER_USER: ${{ secrets.PUSHOVER_USER }}
+          # Dead man's switch — an outside service that shouts when these pings
+          # stop. Without it, the monitor dying looks exactly like a quiet market.
+          HEALTHCHECK_URL: ${{ secrets.HEALTHCHECK_URL }}
           # Set MY_EQUITY under Settings > Secrets and variables > Actions >
           # Variables after depositing. The dispatch input overrides it ad hoc.
           MY_EQUITY: ${{ inputs.my_equity != '' && inputs.my_equity || vars.MY_EQUITY }}

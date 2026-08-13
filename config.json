@@ -12,6 +12,7 @@
  "staleHours": 3,
  "emergencyStaleHours": 8,
  "emergencyFloatPct": 0.06,
+ "heartbeatMin": 10,
  "pushoverRetrySec": 60,
  "pushoverExpireSec": 1800,
  "quietHours": 12,
