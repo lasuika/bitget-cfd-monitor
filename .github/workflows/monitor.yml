@@ -51,6 +51,7 @@ jobs:
           # Set MY_EQUITY under Settings > Secrets and variables > Actions >
           # Variables after depositing. The dispatch input overrides it ad hoc.
           MY_EQUITY: ${{ inputs.my_equity != '' && inputs.my_equity || vars.MY_EQUITY }}
+          MY_EQUITY_AT: ${{ vars.MY_EQUITY_AT }}
           TEST_ALERT: ${{ inputs.test == true && '1' || '' }}
           LOOP_MINUTES: ${{ inputs.test == true && '0' || '50' }}
         run: node monitor_ci.js

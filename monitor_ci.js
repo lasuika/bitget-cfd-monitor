@@ -27,9 +27,17 @@ const STATE_FILE = path.join(DIR, 'state.json');
 const NTFY_TOPIC = process.env.NTFY_TOPIC || CFG.ntfyTopic;
 const LOOP_MINUTES = +(process.env.LOOP_MINUTES ?? 50);
 const TEST_ALERT = !!process.env.TEST_ALERT;
-// Your CFD equity. Kept in a workflow variable so it can be updated from the
-// GitHub UI after a deposit without editing and committing the repo.
+// Your CFD equity, as of MY_EQUITY_AT. Kept in a workflow variable so it can be
+// updated from the GitHub UI after a deposit without touching the repo.
+//
+// This is a snapshot, not a live reading: CFD/MT5 sits outside every API your
+// key can reach, so nothing here can see your balance. It goes stale the moment
+// he trades. We project it forward from the anchor — while your ratio is between
+// 1x and 2x you hold the same 0.01 lots he does, so your PnL tracks his roughly
+// 1:1 before the 20% profit share — and nag you to re-sync once the projection
+// has drifted far enough that the cliff maths would be materially wrong.
 const MY_EQUITY = +(process.env.MY_EQUITY || CFG.myEquity || 0);
+const MY_EQUITY_AT = process.env.MY_EQUITY_AT || CFG.myEquityAt || null;
 
 const n = (v, d = 2) => (v == null || !Number.isFinite(+v) ? '—' : (+v).toFixed(d));
 const log = (o) => console.log(JSON.stringify({ t: new Date().toISOString(), ...o }));
@@ -112,17 +120,46 @@ async function check(state) {
   //
   //    The ratio decays on its own: the 20% profit share comes out of your side,
   //    so your equity compounds slower than his even when copying perfectly.
+  // Anchor his equity the first time we see a given MY_EQUITY reading, so the
+  // projection below measures from the same instant your snapshot was true.
   if (MY_EQUITY > 0 && eq > 0) {
-    const ratio = MY_EQUITY / eq;
+    if (state.anchorKey !== `${MY_EQUITY}@${MY_EQUITY_AT}`) {
+      state.anchorKey = `${MY_EQUITY}@${MY_EQUITY_AT}`;
+      state.anchorHisEq = eq;
+      state.anchorMyEq = MY_EQUITY;
+    }
+    // His equity move, scaled by how many of his lots you mirror, net of the
+    // 20% share taken from your gains.
+    const stepAtAnchor = Math.max(1, Math.floor(state.anchorMyEq / state.anchorHisEq));
+    const hisDelta = eq - state.anchorHisEq;
+    const myDelta = hisDelta > 0 ? hisDelta * stepAtAnchor * 0.8 : hisDelta * stepAtAnchor;
+    state.myEqEstimate = MY_EQUITY + myDelta;
+
+    const drift = Math.abs(myDelta) / MY_EQUITY;
+    if (drift > CFG.resyncDriftPct) {
+      alerts.push({ key: `resync-${Math.round(state.myEqEstimate)}`, p: 'default', tags: 'arrows_counterclockwise',
+        t: '🔄 該回報一次真實權益了',
+        b: `你上次回報 $${n(MY_EQUITY)}(${MY_EQUITY_AT || '未記錄'})。\n` +
+           `依他的權益變化推估你現在約 $${n(state.myEqEstimate)}(${myDelta >= 0 ? '+' : ''}${n(myDelta)})。\n\n` +
+           `推估已偏離 ${n(drift * 100, 0)}% — 跟單比例的計算會開始失準。\n` +
+           `請到 App 看實際權益,更新 GitHub 的 MY_EQUITY 變數。` });
+    }
+  }
+
+  if (MY_EQUITY > 0 && eq > 0) {
+    // Use the projection for the cliff maths — a stale snapshot would keep
+    // reporting a ratio you no longer have.
+    const myEqNow = state.myEqEstimate || MY_EQUITY;
+    const ratio = myEqNow / eq;
     const step = Math.floor(ratio);          // integer multiple currently held
     const myLot = step / 100;                // your size for his 0.01 lots
     const toNextFloor = ratio - step;        // headroom before size drops
-    const topUpTo = (r) => eq * r - MY_EQUITY;
+    const topUpTo = (r) => eq * r - myEqNow;
 
     if (ratio < 1.0) {
       alerts.push({ key: 'cliff-below', p: 'urgent', tags: 'rotating_light',
         t: '🔴 跌破跟單門檻 — 你已經跟不到單',
-        b: `你 $${n(MY_EQUITY)} ÷ 他 $${n(eq)} = ${n(ratio, 4)}x\n\n` +
+        b: `你 $${n(myEqNow)} ÷ 他 $${n(eq)} = ${n(ratio, 4)}x\n\n` +
            `他 95% 的單是 0.01 手,乘上你的比例後無條件捨去成 0。\n` +
            `現在完全沒有在跟單。\n\n` +
            `補 $${n(topUpTo(1.05))} → 回到 1.05x(效率 95%)` });
@@ -142,7 +179,7 @@ async function check(state) {
       alerts.push({ key: `ineff-${step}`, p: 'low', tags: 'money_with_wings',
         t: `💤 資金效率只有 ${n(eff * 100, 0)}%`,
         b: `${n(ratio, 3)}x 和 ${step}.0x 的手數一樣(都是 ${n(myLot)} 手)。\n` +
-           `目前約 $${n(MY_EQUITY - eq * step)} 沒有在工作。\n\n` +
+           `目前約 $${n(myEqNow - eq * step)} 沒有在工作。\n\n` +
            `想提高倉位要補到 ${step + 1}.0x = 再加 $${n(topUpTo(step + 1))}。` });
     }
   }
@@ -216,14 +253,16 @@ async function check(state) {
     alerts.push({ key: 'resumed', p: 'high', tags: 'bell',
       t: '🔔 他恢復交易了',
       b: `沉寂 ${n(state.quietPeakH || quietH, 1)} 小時後重新開單。` +
-         (MY_EQUITY > 0 ? `\n你的比例 ${n(MY_EQUITY / eq, 3)}x` : '') });
+         (MY_EQUITY > 0 ? `\n你的比例 ${n((state.myEqEstimate || MY_EQUITY) / eq, 3)}x` : '') });
     state.quietPeakH = 0;
   }
   state.wasQuiet = quietH >= CFG.quietHours;
   if (state.wasQuiet) state.quietPeakH = Math.max(state.quietPeakH || 0, quietH);
 
   state.lastEquity = eq;
-  return { alerts, eq, open, gold, quietH, ratio: MY_EQUITY > 0 ? MY_EQUITY / eq : null };
+  return { alerts, eq, open, gold, quietH,
+    ratio: MY_EQUITY > 0 ? (state.myEqEstimate || MY_EQUITY) / eq : null,
+    myEq: state.myEqEstimate || MY_EQUITY };
 }
 
 // --- loop ---------------------------------------------------------------
@@ -260,7 +299,7 @@ async function check(state) {
     }
 
     if (r) {
-      log({ pass, eq: r.eq, open: r.open.length, gold: r.gold,
+      log({ pass, eq: r.eq, myEq: r.myEq ? +r.myEq.toFixed(2) : null, open: r.open.length, gold: r.gold,
         ratio: r.ratio ? +r.ratio.toFixed(4) : null, quietH: +r.quietH.toFixed(1),
         alerts: r.alerts.map((a) => a.key) });
 

@@ -10,6 +10,7 @@
  "staleHours": 3,
  "quietHours": 12,
  "cooldownMin": 60,
+ "resyncDriftPct": 0.12,
 
  "pollOpenSec": 45,
  "pollActiveSec": 120,
