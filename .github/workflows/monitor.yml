@@ -56,6 +56,9 @@ jobs:
           # variables > Actions > Secrets. Absent, the monitor runs on ntfy only.
           BARK_KEY: ${{ secrets.BARK_KEY }}
           BARK_SERVER: ${{ vars.BARK_SERVER }}
+          # Pushover: the only channel that re-sends until acknowledged.
+          PUSHOVER_TOKEN: ${{ secrets.PUSHOVER_TOKEN }}
+          PUSHOVER_USER: ${{ secrets.PUSHOVER_USER }}
           # Set MY_EQUITY under Settings > Secrets and variables > Actions >
           # Variables after depositing. The dispatch input overrides it ad hoc.
           MY_EQUITY: ${{ inputs.my_equity != '' && inputs.my_equity || vars.MY_EQUITY }}

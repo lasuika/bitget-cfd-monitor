@@ -13,6 +13,8 @@
  "emergencyStaleHours": 8,
  "emergencyFloatPct": 0.06,
  "barkVolume": 8,
+ "pushoverRetrySec": 60,
+ "pushoverExpireSec": 1800,
  "quietHours": 12,
  "cooldownMin": 60,
  "resyncDriftPct": 0.12,

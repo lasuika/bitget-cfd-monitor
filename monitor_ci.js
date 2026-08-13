@@ -29,6 +29,13 @@ const NTFY_TOPIC = process.env.NTFY_TOPIC || CFG.ntfyTopic;
 // alone, it just loses the ability to break through Do Not Disturb.
 const BARK_KEY = process.env.BARK_KEY || '';
 const BARK_ALL = process.env.BARK_ALL === '1';
+// Pushover is the strongest of the three for the 3am case: it is Apple-approved
+// for Critical Alerts (so it overrides silent and Do Not Disturb like Bark), and
+// unlike Bark it RE-SENDS every `retry` seconds until you actually acknowledge.
+// Bark's call=1 rings for 30 seconds and then gives up, which is exactly the
+// failure mode that matters when you are deeply asleep.
+const PO_TOKEN = process.env.PUSHOVER_TOKEN || '';
+const PO_USER = process.env.PUSHOVER_USER || '';
 const LOOP_MINUTES = +(process.env.LOOP_MINUTES ?? 50);
 const TEST_ALERT = !!process.env.TEST_ALERT;
 // Your CFD equity, as of MY_EQUITY_AT. Kept in a workflow variable so it can be
@@ -136,16 +143,54 @@ function bark(title, body, { critical = false, url = null } = {}) {
   });
 }
 
+// priority 2 = emergency: repeats every `retry` seconds until acknowledged, or
+// until `expire` elapses. Anything less can be slept through.
+function pushover(title, body, { critical = false, url = null } = {}) {
+  if (!PO_TOKEN || !PO_USER) return Promise.resolve(false);
+  const form = new URLSearchParams({
+    token: PO_TOKEN, user: PO_USER, title, message: body,
+    priority: critical ? '2' : '0',
+    ...(critical ? {
+      retry: String(CFG.pushoverRetrySec ?? 60),
+      expire: String(CFG.pushoverExpireSec ?? 1800),
+      sound: 'persistent',
+    } : {}),
+    ...(url ? { url, url_title: '開啟他的交易頁' } : {}),
+  }).toString();
+  const data = Buffer.from(form, 'utf8');
+  return new Promise((resolve) => {
+    const req = https.request({
+      hostname: 'api.pushover.net', path: '/1/messages.json', method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': data.length },
+    }, (res) => {
+      let b = ''; res.on('data', (c) => (b += c));
+      res.on('end', () => {
+        const ok = res.statusCode < 300;
+        if (!ok) log({ pushoverError: `HTTP ${res.statusCode}: ${b.slice(0, 120)}` });
+        resolve(ok);
+      });
+    });
+    req.on('error', (e) => { log({ pushoverError: e.message }); resolve(false); });
+    req.setTimeout(10000, () => { req.destroy(); resolve(false); });
+    req.write(data); req.end();
+  });
+}
+
 const TRADER_URL = `https://www.bitget.com/copy-trading/cfd-trader/${CFG.portfolioId}`;
 
 // Emergencies go out on both channels — if one is down you still get told.
 async function notify(title, body, priority = 'default', tags = '', critical = false) {
   const full = critical ? `${body}\n\n→ 只有你能處理:開 Bitget App 停止跟單或平倉。` : body;
-  const [n1, n2] = await Promise.all([
+  // An emergency goes out on every configured channel at once. They fail in
+  // different ways — one server down, one permission not granted — and this is
+  // the one alert that must not be the one that got lost.
+  const [n1, n2, n3] = await Promise.all([
     ntfy(title, full, critical ? 'max' : priority, tags),
     critical || BARK_ALL ? bark(title, full, { critical, url: TRADER_URL }) : Promise.resolve(null),
+    critical ? pushover(title, full, { critical, url: TRADER_URL }) : Promise.resolve(null),
   ]);
-  log({ sent: VERBOSE ? title : '(內容僅送推播)', ntfy: n1, bark: n2, critical });
+  log({ sent: VERBOSE ? title : '(內容僅送推播)', ntfy: n1, bark: n2, pushover: n3, critical });
+  if (critical && !n1 && !n2 && !n3) log({ CRITICAL_DELIVERY_FAILED: true });
 }
 
 function pub(p) {
@@ -374,7 +419,8 @@ async function check(state) {
         ? `這是緊急通道測試。\n真實情況下代表加碼梯浮虧過大或部位無人看管。\n${new Date().toISOString()}`
         : `ManuGoldPrime 監控運作正常。\n${new Date().toISOString()}`,
       'default', 'white_check_mark', crit);
-    log({ testAlertSent: true, critical: crit, barkConfigured: !!BARK_KEY });
+    log({ testAlertSent: true, critical: crit,
+      channels: { ntfy: !!NTFY_TOPIC, bark: !!BARK_KEY, pushover: !!(PO_TOKEN && PO_USER) } });
     return;
   }
 
