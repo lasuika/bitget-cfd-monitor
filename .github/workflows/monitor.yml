@@ -12,6 +12,10 @@ on:
         description: 'Send a test phone notification only'
         type: boolean
         default: false
+      test_critical:
+        description: 'Make the test an EMERGENCY alert (Bark critical, rings through DND)'
+        type: boolean
+        default: false
       my_equity:
         description: 'Override your CFD equity for this run (0 = use variable)'
         type: string
@@ -23,7 +27,8 @@ permissions:
 concurrency:
   # A one-off test must not sit in the queue behind the 50-minute loop.
   group: >-
-    ${{ inputs.test == true && format('oneoff-{0}', github.run_id) || 'cfd-monitor' }}
+    ${{ (inputs.test == true || inputs.test_critical == true)
+        && format('oneoff-{0}', github.run_id) || 'cfd-monitor' }}
   cancel-in-progress: false
 
 jobs:
@@ -48,12 +53,17 @@ jobs:
       - name: Run monitor
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          # Emergency channel. Add BARK_KEY under Settings > Secrets and
+          # variables > Actions > Secrets. Absent, the monitor runs on ntfy only.
+          BARK_KEY: ${{ secrets.BARK_KEY }}
+          BARK_SERVER: ${{ vars.BARK_SERVER }}
           # Set MY_EQUITY under Settings > Secrets and variables > Actions >
           # Variables after depositing. The dispatch input overrides it ad hoc.
           MY_EQUITY: ${{ inputs.my_equity != '' && inputs.my_equity || vars.MY_EQUITY }}
           MY_EQUITY_AT: ${{ vars.MY_EQUITY_AT }}
-          TEST_ALERT: ${{ inputs.test == true && '1' || '' }}
-          LOOP_MINUTES: ${{ inputs.test == true && '0' || '50' }}
+          TEST_ALERT: ${{ (inputs.test == true || inputs.test_critical == true) && '1' || '' }}
+          TEST_CRITICAL: ${{ inputs.test_critical == true && '1' || '' }}
+          LOOP_MINUTES: ${{ (inputs.test == true || inputs.test_critical == true) && '0' || '50' }}
         run: node monitor_ci.js
 
       - name: Save state

@@ -25,6 +25,10 @@ const CFG = JSON.parse(fs.readFileSync(path.join(DIR, 'config.json'), 'utf8'));
 const STATE_FILE = path.join(DIR, 'state.json');
 
 const NTFY_TOPIC = process.env.NTFY_TOPIC || CFG.ntfyTopic;
+// Bark is the emergency channel; without a key the monitor still runs on ntfy
+// alone, it just loses the ability to break through Do Not Disturb.
+const BARK_KEY = process.env.BARK_KEY || '';
+const BARK_ALL = process.env.BARK_ALL === '1';
 const LOOP_MINUTES = +(process.env.LOOP_MINUTES ?? 50);
 const TEST_ALERT = !!process.env.TEST_ALERT;
 // Your CFD equity, as of MY_EQUITY_AT. Kept in a workflow variable so it can be
@@ -61,8 +65,13 @@ function cadenceSec(hasOpen, now = new Date()) {
 }
 
 // --- notifications ------------------------------------------------------
-function notify(title, body, priority = 'default', tags = '') {
-  if (!NTFY_TOPIC) { log({ notifySkipped: title }); return Promise.resolve(); }
+// Two channels on purpose. ntfy carries everything and is the running log.
+// Bark carries emergencies only, because it is the one that can actually wake
+// you: level=critical rings through silent mode and Do Not Disturb, which ntfy
+// cannot do on iOS. Spending that on routine alerts would train you to silence
+// the app, so it is reserved for the cases where you must act now.
+function ntfy(title, body, priority = 'default', tags = '') {
+  if (!NTFY_TOPIC) { log({ ntfySkipped: title }); return Promise.resolve(false); }
   return new Promise((resolve) => {
     const data = Buffer.from(body, 'utf8');
     const req = https.request({
@@ -74,11 +83,56 @@ function notify(title, body, priority = 'default', tags = '') {
         Priority: priority,
         ...(tags ? { Tags: tags } : {}),
       },
-    }, (res) => { res.resume(); res.on('end', resolve); });
-    req.on('error', (e) => { log({ notifyError: e.message }); resolve(); });
-    req.setTimeout(10000, () => { req.destroy(); resolve(); });
+    }, (res) => { res.resume(); res.on('end', () => resolve(res.statusCode < 300)); });
+    req.on('error', (e) => { log({ ntfyError: e.message }); resolve(false); });
+    req.setTimeout(10000, () => { req.destroy(); resolve(false); });
     req.write(data); req.end();
   });
+}
+
+// POST rather than the path-based GET form so the body can contain newlines,
+// slashes and Chinese without any URL-encoding surprises.
+function bark(title, body, { critical = false, url = null } = {}) {
+  if (!BARK_KEY) return Promise.resolve(false);
+  const payload = {
+    title, body,
+    device_key: BARK_KEY,
+    group: 'CFD跟單',
+    sound: critical ? 'alarm' : 'bell',
+    ...(critical ? { level: 'critical', volume: CFG.barkVolume ?? 8, call: '1' }
+                 : { level: 'timeSensitive' }),
+    ...(url ? { url } : {}),
+  };
+  const data = Buffer.from(JSON.stringify(payload), 'utf8');
+  const host = (process.env.BARK_SERVER || 'api.day.app').replace(/^https?:\/\//, '').replace(/\/$/, '');
+  return new Promise((resolve) => {
+    const req = https.request({
+      hostname: host, path: '/push', method: 'POST',
+      headers: { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': data.length },
+    }, (res) => {
+      let b = ''; res.on('data', (c) => (b += c));
+      res.on('end', () => {
+        const ok = res.statusCode < 300;
+        if (!ok) log({ barkError: `HTTP ${res.statusCode}: ${b.slice(0, 120)}` });
+        resolve(ok);
+      });
+    });
+    req.on('error', (e) => { log({ barkError: e.message }); resolve(false); });
+    req.setTimeout(10000, () => { req.destroy(); resolve(false); });
+    req.write(data); req.end();
+  });
+}
+
+const TRADER_URL = `https://www.bitget.com/copy-trading/cfd-trader/${CFG.portfolioId}`;
+
+// Emergencies go out on both channels — if one is down you still get told.
+async function notify(title, body, priority = 'default', tags = '', critical = false) {
+  const full = critical ? `${body}\n\n→ 只有你能處理:開 Bitget App 停止跟單或平倉。` : body;
+  const [n1, n2] = await Promise.all([
+    ntfy(title, full, critical ? 'max' : priority, tags),
+    critical || BARK_ALL ? bark(title, full, { critical, url: TRADER_URL }) : Promise.resolve(null),
+  ]);
+  log({ sent: title, ntfy: n1, bark: n2, critical });
 }
 
 function pub(p) {
@@ -251,8 +305,11 @@ async function check(state) {
     const ref = gold != null && state.basis != null ? gold + state.basis : null;
     const float = ref == null ? null : leg.reduce((s, p) =>
       s + (side === 'long' ? ref - p.openPrice : p.openPrice - ref) * p.lots * OZ_PER_LOT, 0);
-    alerts.push({ key: `ladder-${side}-${leg.length}`, p: 'urgent', tags: 'chart_with_downwards_trend',
-      t: `🔻 加碼攤平中(${side === 'long' ? '多' : '空'} ${leg.length} 單)`,
+    const myEqRef = state.myEqEstimate || MY_EQUITY || 0;
+    const bad = float != null && myEqRef > 0 && float < -myEqRef * CFG.emergencyFloatPct;
+    alerts.push({ key: `ladder-${side}-${leg.length}`, p: 'urgent', crit: bad,
+      tags: 'chart_with_downwards_trend',
+      t: `${bad ? '🚨' : '🔻'} 加碼攤平中(${side === 'long' ? '多' : '空'} ${leg.length} 單)`,
       b: `入場 ${n(px[0])} ~ ${n(px[px.length - 1])} (跨距 $${n(spread)})\n` +
          `總量 ${n(lots)} 手 = ${n(lots * OZ_PER_LOT, 0)} 盎司\n` +
          `逆勢 $${n(adverse)}` + (float != null ? ` | 估計浮動 ${float >= 0 ? '+' : ''}$${n(float)}` : '') +
@@ -263,11 +320,15 @@ async function check(state) {
   const oldest = open.reduce((a, p) => (a == null || p.openTime < a.openTime ? p : a), null);
   if (oldest) {
     const ageH = (now - oldest.openTime) / 3.6e6;
+    // Median hold is ~15 minutes. Hours means it went wrong; many hours with no
+    // stop attached means nobody is minding it, and nothing will close it but him.
+    const abandoned = ageH >= CFG.emergencyStaleHours && !oldest.sl;
     if (ageH >= CFG.staleHours) {
-      alerts.push({ key: `stale-${oldest.id}`, p: 'high', tags: 'hourglass',
-        t: `⏳ 部位已持有 ${n(ageH, 1)} 小時`,
+      alerts.push({ key: `stale-${oldest.id}`, p: 'high', crit: abandoned, tags: 'hourglass',
+        t: `${abandoned ? '🚨 部位無人看管' : '⏳ 部位已持有'} ${n(ageH, 1)} 小時`,
         b: `${oldest.side === 'long' ? '多' : '空'} ${n(oldest.lots)} 手 @ ${n(oldest.openPrice)}\n` +
-           `中位持倉只有 15 分鐘 — 這筆走反了。\n停損 ${oldest.sl ? n(oldest.sl) : '未設'}` });
+           `中位持倉只有 15 分鐘 — 這筆走反了。\n停損 ${oldest.sl ? n(oldest.sl) : '未設'}` +
+           (abandoned ? `\n\n他已 ${n(ageH, 1)} 小時沒動作,且這筆沒掛停損。` : '') });
     }
   }
 
@@ -294,9 +355,13 @@ async function check(state) {
   const state = loadState();
 
   if (TEST_ALERT) {
-    await notify('[雲端] CFD 監控測試',
-      `ManuGoldPrime 監控運作正常。\n${new Date().toISOString()}`, 'default', 'white_check_mark');
-    log({ testAlertSent: true });
+    const crit = process.env.TEST_CRITICAL === '1';
+    await notify(crit ? '🚨 [測試] 緊急警報' : '[雲端] CFD 監控測試',
+      crit
+        ? `這是緊急通道測試。\n真實情況下代表加碼梯浮虧過大或部位無人看管。\n${new Date().toISOString()}`
+        : `ManuGoldPrime 監控運作正常。\n${new Date().toISOString()}`,
+      'default', 'white_check_mark', crit);
+    log({ testAlertSent: true, critical: crit, barkConfigured: !!BARK_KEY });
     return;
   }
 
@@ -331,7 +396,7 @@ async function check(state) {
       const sent = state.sent || {};
       for (const a of r.alerts) {
         if (sent[a.key] && Date.now() - sent[a.key] < COOLDOWN) continue;
-        await notify(a.t, a.b, a.p, a.tags);
+        await notify(a.t, a.b, a.p, a.tags, !!a.crit);
         sent[a.key] = Date.now();
       }
       for (const k of Object.keys(sent)) if (Date.now() - sent[k] > 7 * 864e5) delete sent[k];
