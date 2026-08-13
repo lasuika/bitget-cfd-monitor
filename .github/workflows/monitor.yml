@@ -12,7 +12,7 @@ on:
         type: boolean
         default: false
       test_critical:
-        description: 'Make the test an EMERGENCY alert (Bark critical, rings through DND)'
+        description: 'Make the test an EMERGENCY alert (Pushover, repeats until acknowledged)'
         type: boolean
         default: false
       my_equity:
@@ -52,11 +52,8 @@ jobs:
       - name: Run monitor
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
-          # Emergency channel. Add BARK_KEY under Settings > Secrets and
-          # variables > Actions > Secrets. Absent, the monitor runs on ntfy only.
-          BARK_KEY: ${{ secrets.BARK_KEY }}
-          BARK_SERVER: ${{ vars.BARK_SERVER }}
-          # Pushover: the only channel that re-sends until acknowledged.
+          # Emergency channel — the only one that re-sends until acknowledged.
+          # Absent, the monitor still runs but on ntfy alone.
           PUSHOVER_TOKEN: ${{ secrets.PUSHOVER_TOKEN }}
           PUSHOVER_USER: ${{ secrets.PUSHOVER_USER }}
           # Set MY_EQUITY under Settings > Secrets and variables > Actions >

@@ -25,15 +25,10 @@ const CFG = JSON.parse(fs.readFileSync(path.join(DIR, 'config.json'), 'utf8'));
 const STATE_FILE = path.join(DIR, 'state.json');
 
 const NTFY_TOPIC = process.env.NTFY_TOPIC || CFG.ntfyTopic;
-// Bark is the emergency channel; without a key the monitor still runs on ntfy
-// alone, it just loses the ability to break through Do Not Disturb.
-const BARK_KEY = process.env.BARK_KEY || '';
-const BARK_ALL = process.env.BARK_ALL === '1';
-// Pushover is the strongest of the three for the 3am case: it is Apple-approved
-// for Critical Alerts (so it overrides silent and Do Not Disturb like Bark), and
-// unlike Bark it RE-SENDS every `retry` seconds until you actually acknowledge.
-// Bark's call=1 rings for 30 seconds and then gives up, which is exactly the
-// failure mode that matters when you are deeply asleep.
+// Pushover is the emergency channel. It holds Apple's Critical Alerts
+// entitlement, so it overrides silent and Do Not Disturb, and priority=2
+// re-sends every `retry` seconds until you actually acknowledge it — which is
+// the part that matters when the alert lands at 3am.
 const PO_TOKEN = process.env.PUSHOVER_TOKEN || '';
 const PO_USER = process.env.PUSHOVER_USER || '';
 const LOOP_MINUTES = +(process.env.LOOP_MINUTES ?? 50);
@@ -55,7 +50,7 @@ const n = (v, d = 2) => (v == null || !Number.isFinite(+v) ? '—' : (+v).toFixe
 // Actions logs are public on a public repo, and unlimited Actions minutes are
 // the only way to keep this running around the clock. So the run log must not
 // carry your balance. Alert bodies still hold the real numbers — those go to
-// ntfy and Bark, which are private.
+// ntfy and Pushover, which are private.
 const VERBOSE = process.env.VERBOSE === '1';
 const REDACT = new Set(['myEq', 'ratio', 'daysLeft']);
 function log(o) {
@@ -86,10 +81,10 @@ function cadenceSec(hasOpen, now = new Date()) {
 
 // --- notifications ------------------------------------------------------
 // Two channels on purpose. ntfy carries everything and is the running log.
-// Bark carries emergencies only, because it is the one that can actually wake
-// you: level=critical rings through silent mode and Do Not Disturb, which ntfy
-// cannot do on iOS. Spending that on routine alerts would train you to silence
-// the app, so it is reserved for the cases where you must act now.
+// Pushover carries emergencies only, because it is the one that can actually
+// wake you — ntfy cannot override silent mode on iOS. Spending a Do Not Disturb
+// override on routine alerts would train you to mute the app, so it is reserved
+// for the cases where you must act now.
 function ntfy(title, body, priority = 'default', tags = '') {
   if (!NTFY_TOPIC) { log({ ntfySkipped: title }); return Promise.resolve(false); }
   return new Promise((resolve) => {
@@ -105,39 +100,6 @@ function ntfy(title, body, priority = 'default', tags = '') {
       },
     }, (res) => { res.resume(); res.on('end', () => resolve(res.statusCode < 300)); });
     req.on('error', (e) => { log({ ntfyError: e.message }); resolve(false); });
-    req.setTimeout(10000, () => { req.destroy(); resolve(false); });
-    req.write(data); req.end();
-  });
-}
-
-// POST rather than the path-based GET form so the body can contain newlines,
-// slashes and Chinese without any URL-encoding surprises.
-function bark(title, body, { critical = false, url = null } = {}) {
-  if (!BARK_KEY) return Promise.resolve(false);
-  const payload = {
-    title, body,
-    device_key: BARK_KEY,
-    group: 'CFD跟單',
-    sound: critical ? 'alarm' : 'bell',
-    ...(critical ? { level: 'critical', volume: CFG.barkVolume ?? 8, call: '1' }
-                 : { level: 'timeSensitive' }),
-    ...(url ? { url } : {}),
-  };
-  const data = Buffer.from(JSON.stringify(payload), 'utf8');
-  const host = (process.env.BARK_SERVER || 'api.day.app').replace(/^https?:\/\//, '').replace(/\/$/, '');
-  return new Promise((resolve) => {
-    const req = https.request({
-      hostname: host, path: '/push', method: 'POST',
-      headers: { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': data.length },
-    }, (res) => {
-      let b = ''; res.on('data', (c) => (b += c));
-      res.on('end', () => {
-        const ok = res.statusCode < 300;
-        if (!ok) log({ barkError: `HTTP ${res.statusCode}: ${b.slice(0, 120)}` });
-        resolve(ok);
-      });
-    });
-    req.on('error', (e) => { log({ barkError: e.message }); resolve(false); });
     req.setTimeout(10000, () => { req.destroy(); resolve(false); });
     req.write(data); req.end();
   });
@@ -184,13 +146,12 @@ async function notify(title, body, priority = 'default', tags = '', critical = f
   // An emergency goes out on every configured channel at once. They fail in
   // different ways — one server down, one permission not granted — and this is
   // the one alert that must not be the one that got lost.
-  const [n1, n2, n3] = await Promise.all([
+  const [n1, n2] = await Promise.all([
     ntfy(title, full, critical ? 'max' : priority, tags),
-    critical || BARK_ALL ? bark(title, full, { critical, url: TRADER_URL }) : Promise.resolve(null),
     critical ? pushover(title, full, { critical, url: TRADER_URL }) : Promise.resolve(null),
   ]);
-  log({ sent: VERBOSE ? title : '(內容僅送推播)', ntfy: n1, bark: n2, pushover: n3, critical });
-  if (critical && !n1 && !n2 && !n3) log({ CRITICAL_DELIVERY_FAILED: true });
+  log({ sent: VERBOSE ? title : '(內容僅送推播)', ntfy: n1, pushover: n2, critical });
+  if (critical && !n1 && !n2) log({ CRITICAL_DELIVERY_FAILED: true });
 }
 
 function pub(p) {
@@ -420,7 +381,7 @@ async function check(state) {
         : `ManuGoldPrime 監控運作正常。\n${new Date().toISOString()}`,
       'default', 'white_check_mark', crit);
     log({ testAlertSent: true, critical: crit,
-      channels: { ntfy: !!NTFY_TOPIC, bark: !!BARK_KEY, pushover: !!(PO_TOKEN && PO_USER) } });
+      channels: { ntfy: !!NTFY_TOPIC, pushover: !!(PO_TOKEN && PO_USER) } });
     return;
   }
 
