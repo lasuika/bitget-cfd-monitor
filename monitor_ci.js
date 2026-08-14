@@ -170,11 +170,14 @@ function pushover(title, body, { critical = false, url = null, wake = null } = {
     priority: critical ? '2' : '0',
     ...(critical ? {
       // Pushover's hard floor for emergency retries is 30 seconds — nothing
-      // faster is possible through the API. The silent path runs at the floor
-      // so a pocketed phone buzzes twice a minute; the loud path stays at 60s.
+      // faster is possible through the API. The day path runs at the floor;
+      // the night path stays at 60s.
       retry: String(loud ? (CFG.pushoverRetrySec ?? 60) : (CFG.pushoverRetryVibrateSec ?? 30)),
       expire: String(CFG.pushoverExpireSec ?? 1800),
-      ...(loud ? {} : { sound: 'vibrate' }),
+      // Emergency-priority messages ignore the app's default-sound setting —
+      // the API must name the sound. Night omits it (the client's loud
+      // high-priority alarm applies); day sends the configured tone.
+      ...(loud ? {} : { sound: CFG.daySound || 'pushover' }),
     } : {}),
     ...(url ? { url, url_title: '開啟他的交易頁' } : {}),
   }).toString();
@@ -801,7 +804,7 @@ async function check(rootState, trader) {
   if (TEST_ALERT) {
     const crit = process.env.TEST_CRITICAL === '1';
     const vib = process.env.TEST_VIBRATE === '1';
-    await notify(vib ? '📳 [測試] 震動版緊急警報' : crit ? '🚨 [測試] 緊急警報' : '[雲端] CFD 監控測試',
+    await notify(vib ? '🔔 [測試] 清醒時段緊急警報' : crit ? '🚨 [測試] 緊急警報' : '[雲端] CFD 監控測試',
       crit
         ? `這是緊急通道測試。\n真實情況下代表加碼梯浮虧過大或部位無人看管。\n${new Date().toISOString()}`
         : `ManuGoldPrime 監控運作正常。\n${new Date().toISOString()}`,
