@@ -872,12 +872,16 @@ async function check(rootState, trader) {
     // $10.3/oz, max $26.3/oz over ten weekends — and stops do not protect
     // against gaps (they fill at the reopen price).
     const nw = new Date();
-    if (nw.getUTCDay() === 5 && nw.getUTCHours() >= 19 && nw.getUTCHours() < 21 && copiedTraders.length) {
+    // Friday 12-14 UTC = Friday 20:00-22:00 Taipei — the user's evening, before
+    // their 23:00 bedtime. The original 19-21 UTC window landed at 3am Taipei:
+    // a non-waking reminder delivered while its audience slept, about a market
+    // close happening before they woke.
+    if (nw.getUTCDay() === 5 && nw.getUTCHours() >= 12 && nw.getUTCHours() < 14 && copiedTraders.length) {
       const wk = nw.toISOString().slice(0, 10);
       if (state.friNag !== wk) {
         state.friNag = wk;
-        await notify('🕘 週五休市前檢查(21:00 UTC)',
-          `黃金兩小時內休市,休市後整個週末無法停止跟單。\n` +
+        await notify('🕘 週五晚間檢查:黃金明晨 05:00(台北)休市',
+          `休市後整個週末無法停止跟單。\n` +
           `開 App 看一眼跟單帳戶:\n` +
           `• 空倉 → 忽略這則,安心過週末\n` +
           `• 有持倉 → 想想要不要在休市前手動停止跟單:\n` +
