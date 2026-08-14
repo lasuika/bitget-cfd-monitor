@@ -118,6 +118,9 @@ jobs:
           # Dead man's switch — an outside service that shouts when these pings
           # stop. Without it, the monitor dying looks exactly like a quiet market.
           HEALTHCHECK_URL: ${{ secrets.HEALTHCHECK_URL }}
+          # Lets a running leg notice that main has moved past its own commit
+          # and step aside for the queued newer run — zero-gap deploys.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Set MY_EQUITY under Settings > Secrets and variables > Actions >
           # Variables after depositing. The dispatch input overrides it ad hoc.
           # One variable per copy account — each trader you follow gets its own
