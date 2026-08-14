@@ -377,8 +377,13 @@ async function check(rootState, trader) {
   if (closed.length) {
     const fresh = closed.filter((t) => t.closeTime && !known[t.id]);
     for (const t of fresh) known[t.id] = t.closeTime;
+    // Prune only entries that have ALSO fallen off page 1. A fixed age alone
+    // re-alerts old trades: at his ~19 trades per 3 days, a 3-day-old close can
+    // still sit at rank 20 of the page — and one did, resurfacing as "fresh"
+    // within 3 minutes of aging out of this map.
+    const onPage = new Set(closed.map((t) => t.id));
     for (const k of Object.keys(known)) {
-      if (now - known[k] > 3 * 864e5) delete known[k];
+      if (now - known[k] > 3 * 864e5 && !onPage.has(k)) delete known[k];
     }
     state.knownClosed = known;
 
