@@ -458,16 +458,34 @@ async function check(rootState, trader) {
       const recent = state.recentResults || [];
       for (const t of chrono) recent.push(t.profit > 0 ? 1 : 0);
       state.recentResults = recent.slice(-20);
+      // Shrink-the-cap advice rides Pushover, at the user's request: the
+      // upsize nudge is a nice-to-have, but the downsize signal means the
+      // regime is breaking and waiting until morning has a price.
       if (state.recentResults.length >= 20) {
         const wr = state.recentResults.reduce((a, b) => a + b, 0) / state.recentResults.length;
         if (wr < 0.6 && !state.wrLow) {
           state.wrLow = true;
-          alerts.push({ key: 'winrate-drift', p: 'high', tags: 'chart_with_downwards_trend',
-            t: `📉 近 20 筆勝率掉到 ${n(wr * 100, 0)}%`,
-            b: `他的歷史勝率 95%。連續劣化代表策略碰到了沒見過的行情。\n` +
-               `防禦選項:App 把 Max lot 砍半(風險即時減半,可逆),或暫停跟單。` });
+          alerts.push({ key: 'winrate-drift', p: 'urgent', crit: true, tags: 'chart_with_downwards_trend',
+            t: `🚨 建議調小 Max lot — 勝率劣化`,
+            b: `近 20 筆勝率 ${n(wr * 100, 0)}%(他的歷史是 95%)。\n` +
+               `策略碰到了沒見過的行情。\n\n` +
+               `App → 跟單設定 → Max lot 砍半(0.10 → 0.05):風險即時減半、可逆。\n` +
+               `更保守:直接停止跟單(會市價平掉所有部位)。` });
         } else if (wr >= 0.75) state.wrLow = false;
       }
+      // Fast break: three losses inside the last five closes. His lifetime
+      // base rate is 2 losses in 44 trades — three-in-five is not noise at any
+      // confidence level, and the 20-trade gauge is too slow for a fast blowup.
+      const last5 = state.recentResults.slice(-5);
+      const losses5 = last5.filter((x) => x === 0).length;
+      if (last5.length >= 5 && losses5 >= 3 && !state.fastDrift) {
+        state.fastDrift = true;
+        alerts.push({ key: 'fast-drift', p: 'urgent', crit: true, tags: 'rotating_light',
+          t: `🚨 建議調小 Max lot — 近 5 筆虧了 ${losses5} 筆`,
+          b: `他生涯 44 筆才虧 2 筆 — 這個密度是模式斷裂,不是雜訊。\n\n` +
+             `App → 跟單設定 → Max lot 砍半(0.10 → 0.05):風險即時減半、可逆。\n` +
+             `更保守:直接停止跟單(會市價平掉所有部位)。` });
+      } else if (last5.length >= 5 && losses5 <= 1) state.fastDrift = false;
 
       // (d) fees drag on the equity projection: $6 per lot round-trip, measured
       //     from the first live fill ($0.60 at 0.10 lots).
