@@ -61,8 +61,10 @@ const TRADERS = CFG.traders && CFG.traders.length ? CFG.traders : [{
 }];
 // MY_EQUITY_<N> overrides the Nth trader's equity from a workflow variable.
 for (let i = 0; i < TRADERS.length; i++) {
-  const v = +(process.env[`MY_EQUITY_${i + 1}`] || 0);
-  if (v > 0) TRADERS[i].myEquity = v;
+  // An explicit 0 means "not copying this one" and must override the config —
+  // treating it as unset would keep reporting cliffs for an account you closed.
+  const raw = process.env[`MY_EQUITY_${i + 1}`];
+  if (raw != null && raw !== '' && Number.isFinite(+raw)) TRADERS[i].myEquity = +raw;
   const a = process.env[`MY_EQUITY_AT_${i + 1}`];
   if (a) TRADERS[i].myEquityAt = a;
 }
