@@ -38,9 +38,11 @@ const PO_USER = process.env.PUSHOVER_USER || '';
 // service on a heartbeat and let IT shout when the pings stop. It has to be
 // external: anything hosted here dies in the same failure.
 const HEALTHCHECK_URL = process.env.HEALTHCHECK_URL || '';
-// Tests force the wake path — an alarm test that quietly vibrates because it
-// was run in the afternoon would read as broken.
-const FORCE_WAKE = process.env.TEST_CRITICAL === '1';
+// Alarm tests pin the path explicitly instead of trusting the clock: a loud
+// test run in the afternoon or a vibrate test run at midnight must exercise
+// the path being tested, not whatever the hour happens to select.
+const FORCE_WAKE = process.env.TEST_VIBRATE === '1' ? false
+  : process.env.TEST_CRITICAL === '1' ? true : null;
 const LOOP_MINUTES = +(process.env.LOOP_MINUTES ?? 50);
 const TEST_ALERT = !!process.env.TEST_ALERT;
 // Your CFD equity, as of MY_EQUITY_AT. Kept in a workflow variable so it can be
@@ -223,7 +225,7 @@ async function notify(title, body, priority = 'default', tags = '', critical = f
   // the one alert that must not be the one that got lost.
   const [n1, n2] = await Promise.all([
     ntfy(title, full, critical ? 'max' : priority, tags),
-    critical ? pushover(title, full, { critical, url, wake: FORCE_WAKE || null }) : Promise.resolve(null),
+    critical ? pushover(title, full, { critical, url, wake: FORCE_WAKE }) : Promise.resolve(null),
   ]);
   log({ sent: VERBOSE ? title : '(內容僅送推播)', ntfy: n1, pushover: n2, critical });
   if (critical && !n1 && !n2) log({ CRITICAL_DELIVERY_FAILED: true });
@@ -795,7 +797,8 @@ async function check(rootState, trader) {
 
   if (TEST_ALERT) {
     const crit = process.env.TEST_CRITICAL === '1';
-    await notify(crit ? '🚨 [測試] 緊急警報' : '[雲端] CFD 監控測試',
+    const vib = process.env.TEST_VIBRATE === '1';
+    await notify(vib ? '📳 [測試] 震動版緊急警報' : crit ? '🚨 [測試] 緊急警報' : '[雲端] CFD 監控測試',
       crit
         ? `這是緊急通道測試。\n真實情況下代表加碼梯浮虧過大或部位無人看管。\n${new Date().toISOString()}`
         : `ManuGoldPrime 監控運作正常。\n${new Date().toISOString()}`,

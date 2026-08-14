@@ -19,6 +19,10 @@ on:
         description: 'Make the test an EMERGENCY alert (Pushover, repeats until acknowledged)'
         type: boolean
         default: false
+      test_vibrate:
+        description: 'Test the VIBRATE emergency path (repeats until ack, no sound)'
+        type: boolean
+        default: false
       test_healthcheck:
         description: 'Test the dead man switch: force it DOWN then back UP'
         type: boolean
@@ -47,7 +51,7 @@ jobs:
   # Notification test, kept in its own job so it never queues behind the
   # 22-hour monitoring run — and so it fires once rather than once per leg.
   test:
-    if: inputs.test == true || inputs.test_critical == true || inputs.test_healthcheck == true
+    if: inputs.test == true || inputs.test_critical == true || inputs.test_vibrate == true || inputs.test_healthcheck == true
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -66,7 +70,8 @@ jobs:
           # NB: `cond && '' || 'x'` always yields 'x' in GitHub expressions —
           # the empty string is falsy — so the negation form is required.
           TEST_ALERT: ${{ !(inputs.test_healthcheck == true) && '1' || '' }}
-          TEST_CRITICAL: ${{ inputs.test_critical == true && '1' || '' }}
+          TEST_CRITICAL: ${{ (inputs.test_critical == true || inputs.test_vibrate == true) && '1' || '' }}
+          TEST_VIBRATE: ${{ inputs.test_vibrate == true && '1' || '' }}
           TEST_HEALTHCHECK: ${{ inputs.test_healthcheck == true && '1' || '' }}
           LOOP_MINUTES: '0'
         run: node monitor_ci.js
@@ -78,7 +83,7 @@ jobs:
   # fail-fast is off deliberately — a crash in leg 2 must not take the rest of
   # the day's coverage with it.
   monitor:
-    if: github.event_name == 'schedule' || (inputs.test != true && inputs.test_critical != true && inputs.test_healthcheck != true)
+    if: github.event_name == 'schedule' || (inputs.test != true && inputs.test_critical != true && inputs.test_vibrate != true && inputs.test_healthcheck != true)
     runs-on: ubuntu-latest
     timeout-minutes: 350
     strategy:
