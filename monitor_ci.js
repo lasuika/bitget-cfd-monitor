@@ -67,6 +67,7 @@ for (let i = 0; i < TRADERS.length; i++) {
   if (raw != null && raw !== '' && Number.isFinite(+raw)) TRADERS[i].myEquity = +raw;
   const a = process.env[`MY_EQUITY_AT_${i + 1}`];
   if (a) TRADERS[i].myEquityAt = a;
+  TRADERS[i].varName = `MY_EQUITY_${i + 1}`;
 }
 
 const n = (v, d = 2) => (v == null || !Number.isFinite(+v) ? '—' : (+v).toFixed(d));
@@ -211,6 +212,7 @@ async function notify(title, body, priority = 'default', tags = '', critical = f
   ]);
   log({ sent: VERBOSE ? title : '(內容僅送推播)', ntfy: n1, pushover: n2, critical });
   if (critical && !n1 && !n2) log({ CRITICAL_DELIVERY_FAILED: true });
+  return !!(n1 || n2);
 }
 
 function pub(p) {
@@ -238,11 +240,24 @@ async function check(rootState, trader) {
   const state = (rootState.byTrader[id] = rootState.byTrader[id] || {});
   const MY_EQUITY = +trader.myEquity || 0;
   const MY_EQUITY_AT = trader.myEquityAt || null;
-  const TAG = trader.name ? `[${trader.name}] ` : '';
+  // Resolved once per pass; every lot/scale computation below MUST use these
+  // rather than re-reading config — the four independently-drifting copies of
+  // this arithmetic are what produced the scale-mixing bug class.
+  const baseLot = +trader.baseLot || 0.01;
+  const lotCap = +trader.maxLotPerTrade || Infinity;
 
   const perf = await cfd.performance(id);
-  await sleep(700);
-  const open = (await cfd.openPositions(id)).map(norm);
+
+  // The open view is blind for anonymous callers (proven: five polls inside a
+  // 26.8-minute hold, all zero rows). Probing it every pass spent a third of
+  // the rate-limited budget on a canary whose only job is noticing if Bitget
+  // ever unhides it — hourly is plenty for that.
+  let open = [];
+  if (now - (state.lastCanaryAt || 0) > 3600e3) {
+    state.lastCanaryAt = now;
+    await sleep(700);
+    open = (await cfd.openPositions(id).catch(() => [])).map(norm);
+  }
 
   // History is the PRIMARY detection path, polled every pass. This is now
   // proven, not precautionary: leg-1 logs caught five polls landing inside a
@@ -250,9 +265,28 @@ async function check(rootState, trader) {
   // anonymous currentPosition view hides live positions (standard copy-trade
   // anti-freeriding), and even lastOrderTime lags until after the close. Closed
   // trades, by contrast, appear in history within ~3 minutes of closing.
+  // History failures must be LOUD: this is the primary detection path, and a
+  // silent [] here previously left the heartbeat green while every detector
+  // starved — total signal loss dressed as a quiet market.
   await sleep(700);
-  const closed = (await cfd.history(id, { maxPages: 1, pageSize: 20 }).catch(() => [])).map(norm);
-  const gold = await goldNow().catch(() => null);
+  let closed = [], histOk = true;
+  try {
+    closed = (await cfd.history(id, { maxPages: 1, pageSize: 20 })).map(norm);
+    state.histFail = 0;
+  } catch (e) {
+    histOk = false;
+    state.histFail = (state.histFail || 0) + 1;
+    log({ trader: trader.name, histError: e.message, histFail: state.histFail });
+    if (state.histFail >= 5) {
+      alerts.push({ key: 'hist-dead', p: 'high', cool: 360, tags: 'no_entry',
+        t: '⚠️ 主偵測路徑失效',
+        b: `連續 ${state.histFail} 次撈不到他的平倉歷史:\n${e.message}\n` +
+           `平倉偵測與所有模式偵測器目前全瞎。` });
+    }
+  }
+  // Gold only matters to consumers gated on open rows; while the view is blind
+  // both fetches per pass were pure waste against the ticker host.
+  const gold = open.length ? await goldNow().catch(() => null) : null;
 
   // Canary: if the open view ever starts returning rows — a Bitget change, or
   // an authenticated future — the unrealised-risk alerts come back to life,
@@ -267,6 +301,7 @@ async function check(rootState, trader) {
 
   const eq = +perf.totalEquity;
   const lastOrder = +perf.lastOrderTime;
+  let pendingCapraise = null;
 
   // 1. equity cliffs. 95% of his trades are 0.01 lots — the MT5 minimum — and
   //    copier lots round DOWN, so your size for one of his 0.01-lot entries is
@@ -283,25 +318,29 @@ async function check(rootState, trader) {
   if (MY_EQUITY > 0 && eq > 0) {
     if (state.anchorKey !== `${MY_EQUITY}@${MY_EQUITY_AT}`) {
       state.anchorKey = `${MY_EQUITY}@${MY_EQUITY_AT}`;
-      state.anchorHisEq = eq;
-      state.anchorMyEq = MY_EQUITY;
       state.feeSinceAnchor = 0;
+      state.pnlSinceAnchor = 0;
+      state.resyncNagged = false;
     }
-    // His equity move, scaled by how many of his lots you mirror, net of the
-    // 20% share taken from your gains.
-    const stepAtAnchor = Math.max(1, Math.floor(state.anchorMyEq / state.anchorHisEq));
-    const hisDelta = eq - state.anchorHisEq;
-    const myDelta = hisDelta > 0 ? hisDelta * stepAtAnchor * 0.8 : hisDelta * stepAtAnchor;
-    state.myEqEstimate = MY_EQUITY + myDelta - (state.feeSinceAnchor || 0);
+    // Your equity is projected from HIS CLOSED TRADES, not from his equity
+    // curve: his equity moves mostly by withdrawals — he sweeps profit out
+    // daily — and the previous delta-based projection read every sweep as a
+    // trading loss, halving the phantom equity and firing false cliff alarms.
+    // Trade PnL accrues in section 1b at the lot multiple in force per close.
+    state.myEqEstimate = MY_EQUITY + (state.pnlSinceAnchor || 0) - (state.feeSinceAnchor || 0);
 
-    const drift = Math.abs(myDelta) / MY_EQUITY;
-    if (drift > CFG.resyncDriftPct) {
-      alerts.push({ key: `resync-${Math.round(state.myEqEstimate)}`, p: 'default', tags: 'arrows_counterclockwise',
+    const drift = Math.abs(state.myEqEstimate - MY_EQUITY) / MY_EQUITY;
+    if (drift > CFG.resyncDriftPct && !state.resyncNagged) {
+      state.resyncNagged = true;
+      // Static key: the old one embedded the rounded equity estimate, which
+      // both minted a fresh dedup key every pass AND printed the user's
+      // balance into the public Actions log via the alert-key log line.
+      alerts.push({ key: 'resync', p: 'default', cool: 1440, tags: 'arrows_counterclockwise',
         t: '🔄 該回報一次真實權益了',
         b: `你上次回報 $${n(MY_EQUITY)}(${MY_EQUITY_AT || '未記錄'})。\n` +
-           `依他的權益變化推估你現在約 $${n(state.myEqEstimate)}(${myDelta >= 0 ? '+' : ''}${n(myDelta)})。\n\n` +
+           `依他的成交累計推估你現在約 $${n(state.myEqEstimate)}。\n\n` +
            `推估已偏離 ${n(drift * 100, 0)}% — 跟單比例的計算會開始失準。\n` +
-           `請到 App 看實際權益,更新 GitHub 的 MY_EQUITY 變數。` });
+           `請到 App 看實際權益,更新 GitHub 的 ${trader.varName || 'MY_EQUITY_2'} 變數。` });
     }
   }
 
@@ -324,8 +363,6 @@ async function check(rootState, trader) {
     // ratio 5.00 arrived as exactly 0.10.
     const myEqNow = state.myEqEstimate || MY_EQUITY;
     const ratio = myEqNow / eq;
-    const baseLot = +trader.baseLot || 0.01;
-    const lotCap = +trader.maxLotPerTrade || Infinity;
     const rawSteps = Math.floor(baseLot * ratio * 100);   // your lots in 0.01 units
     const pinned = rawSteps / 100 > lotCap;
     const myLot = Math.min(rawSteps / 100, lotCap);
@@ -335,7 +372,7 @@ async function check(rootState, trader) {
 
     state.daysLeft = null;
     if (rawSteps < 1) {
-      alerts.push({ key: 'cliff-below', p: 'urgent', tags: 'rotating_light',
+      alerts.push({ key: 'cliff-below', p: 'urgent', cool: 720, tags: 'rotating_light',
         t: '🔴 跌破跟單門檻 — 你已經跟不到單',
         b: `你 $${n(myEqNow)} ÷ 他 $${n(eq)} = ${n(ratio, 4)}x\n\n` +
            `他的單筆 ${n(baseLot)} 手乘上你的比例後無條件捨去成 0。\n` +
@@ -348,18 +385,12 @@ async function check(rootState, trader) {
       // user asked to be told. Two health gates guard the advice: never
       // suggest raising leverage within three days of a real loss, nor while
       // the rolling win rate is in drift. Silence is the right answer there.
+      // Emission is DEFERRED to after section 1b: the health gates read the
+      // regime flags (wrLow, lastRealLossAt) that 1b writes ~100 lines below,
+      // so pushing here would consult last pass's flags and could advise
+      // raising leverage in the same batch as the loss that forbids it.
       const stepsOver = rawSteps - Math.round(lotCap * 100);
-      const recentLoss = state.lastRealLossAt && now - state.lastRealLossAt < 3 * 864e5;
-      if (stepsOver >= 1 && !state.wrLow && !recentLoss) {
-        const newCap = rawSteps / 100;
-        alerts.push({ key: `capraise-${rawSteps}`, p: 'default', tags: 'chart_with_upwards_trend',
-          t: `📈 獲利已長到可調高 Max lot`,
-          b: `推估權益 $${n(myEqNow)} → 自然手數 ${n(newCap)},上限還釘在 ${n(lotCap)}。\n` +
-             `App 把 Max lot 調到 ${n(newCap)} 可讓獲利投入運轉` +
-             `(約 +${n(stepsOver / (lotCap * 100) * 100, 0)}% 月獲利)。\n` +
-             `⚠️ 風險等比放大:壞堆疊尾部從約 -$${n(lotCap * 5 * 3000, 0)} 變 -$${n(newCap * 5 * 3000, 0)}。\n\n` +
-             `調整後回報:①App 新上限 ②實際權益,我同步 config 讓計算對齊。` });
-      }
+      if (stepsOver >= 1) pendingCapraise = { stepsOver, rawSteps, myEqNow };
     } else {
       let daysLeft = null;
       const oldest = state.eqHist[0];
@@ -373,7 +404,7 @@ async function check(rootState, trader) {
         if (closingPerDay > 0) daysLeft = (myEqNow - eq * floorRatio) / closingPerDay;
       }
       if (daysLeft != null && daysLeft >= 0 && daysLeft < CFG.cliffWarnDays) {
-        alerts.push({ key: `cliff-warn-${rawSteps}`, p: 'high', tags: 'warning',
+        alerts.push({ key: `cliff-warn-${rawSteps}`, p: 'high', cool: 720, tags: 'warning',
           t: `🟡 約 ${n(daysLeft, 0)} 天後掉一階`,
           b: `目前 ${n(ratio, 3)}x,每筆跟 ${n(myLot)} 手。\n` +
              `跌到 ${n(floorRatio, 2)}x 以下會變 ${n((rawSteps - 1) / 100)} 手` +
@@ -385,9 +416,10 @@ async function check(rootState, trader) {
     }
   }
 
-  // 1b. closed trades seen only in history — the fallback path.
+  // 1b. closed trades from history — the PRIMARY path.
   const known = state.knownClosed || {};
-  const POLL_S = CFG.pollActiveSec || 120;
+  // One conversion, one home: HIS dollars x copyMult = YOUR dollars.
+  const copyMult = (state.curMyLot || 0) / baseLot;
   if (closed.length) {
     const fresh = closed.filter((t) => t.closeTime && !known[t.id]);
     for (const t of fresh) known[t.id] = t.closeTime;
@@ -404,39 +436,49 @@ async function check(rootState, trader) {
     // Only meaningful once we have a baseline; the first pass would otherwise
     // report his entire recent history as new.
     if (state.histSeeded) {
-      const notable = fresh.filter((t) => (t.closeTime - t.openTime) / 1000 > POLL_S * 2);
-      const everSeenOpen = (t) => !!(state.seen || {})[t.id];
-      const blind = notable.filter((t) => !everSeenOpen(t));
-
       const realised = fresh.reduce((sum, t) => sum + t.profit, 0);
       if (fresh.length) {
         // He works in bursts. A close means he is at the desk — poll tightly
         // for the next while so the rest of the burst is caught near-realtime.
         state.burstUntil = now + (CFG.burstMinutes ?? 30) * 60000;
         const myEqRef = state.myEqEstimate || MY_EQUITY || 0;
-        const bad = myEqRef > 0 && realised < -myEqRef * CFG.emergencyFloatPct;
+        // `realised` is in HIS dollars; the 6% line is in YOURS. Convert first —
+        // the raw comparison left this trigger 5x too loose at current sizing.
+        const realisedUser = realised * copyMult;
+        const bad = myEqRef > 0 && copyMult > 0 && realisedUser < -myEqRef * CFG.emergencyFloatPct;
         alerts.push({ key: `closed-${fresh.map((t) => t.id).join(',')}`,
           p: bad ? 'urgent' : 'default', crit: bad, tags: bad ? 'rotating_light' : 'receipt',
-          t: `${bad ? '🚨' : '📄'} 他平倉 ${fresh.length} 筆 ${realised >= 0 ? '+' : ''}$${n(realised)}`,
+          t: `${bad ? '🚨' : '📄'} 他平倉 ${fresh.length} 筆 ${realised >= 0 ? '+' : ''}$${n(realised)}` +
+             (copyMult > 0 ? `(你約 ${realisedUser >= 0 ? '+' : ''}$${n(realisedUser)})` : ''),
           b: fresh.slice(0, 5).map((t) =>
             `${t.side === 'long' ? '多' : '空'} ${n(t.lots)} 手 ${n(t.openPrice)}→${n(t.closePrice)} ` +
             `${t.profit >= 0 ? '+' : ''}$${n(t.profit)} (${n((t.closeTime - t.openTime) / 60000, 1)} 分)`
           ).join('\n') + (fresh.length > 5 ? `\n…另 ${fresh.length - 5} 筆` : '') });
+
+        // Back-from-break bell, driven by what we can actually see (closes).
+        // The old version keyed on open-view rows and could never fire.
+        if (state.wasQuiet) {
+          alerts.push({ key: 'resumed', p: 'high', tags: 'bell',
+            t: '🔔 他恢復交易了',
+            b: `沉寂 ${n(state.quietPeakH || 0, 1)} 小時後重新出手。` +
+               (MY_EQUITY > 0 ? `\n你的比例 ${n((state.myEqEstimate || MY_EQUITY) / eq, 3)}x` : '') });
+          state.quietPeakH = 0;
+          state.wasQuiet = false;
+        }
       }
 
       // Regime detectors. A 95%-win trader whose lifetime worst loss is $0.80
       // is untested by definition; what breaks first is the PATTERN, and these
       // watch for exactly that.
       const chrono = [...fresh].sort((a, b) => a.closeTime - b.closeTime);
-      const bl3 = +trader.baseLot || 0.01;
 
       // (a) his per-order size changed — your copy scales with it 1:1
       for (const t of chrono) {
-        if (Math.abs(t.lots - bl3) > 1e-9) {
+        if (Math.abs(t.lots - baseLot) > 1e-9) {
           alerts.push({ key: `sizechange-${Math.round(t.lots * 100)}`, p: 'high', tags: 'triangular_ruler',
-            t: `📐 他的單筆手數變了:${n(t.lots)}(原 ${n(bl3)})`,
-            b: `你的跟單會等比放大 ${n(t.lots / bl3, 1)} 倍(超出部分由 Max lot 上限擋住)。\n` +
-               `懸崖計算以 ${n(bl3)} 手為基礎 — 若他長期改用新手數,需要更新 baseLot。` });
+            t: `📐 他的單筆手數變了:${n(t.lots)}(原 ${n(baseLot)})`,
+            b: `你的跟單會等比放大 ${n(t.lots / baseLot, 1)} 倍(超出部分由 Max lot 上限擋住)。\n` +
+               `懸崖計算以 ${n(baseLot)} 手為基礎 — 若他長期改用新手數,需要更新 baseLot。` });
         }
       }
 
@@ -449,7 +491,7 @@ async function check(rootState, trader) {
           alerts.push({ key: `realloss-${t.id}`, p: 'high', tags: 'small_red_triangle_down',
             t: `🔻 出現真實虧損 -$${n(Math.abs(t.profit))}`,
             b: `${t.side === 'long' ? '多' : '空'} ${n(t.lots)} 手 ${n(t.openPrice)}→${n(t.closePrice)}\n` +
-               `你的等比虧損約 -$${n(Math.abs(t.profit) * ((state.curMyLot || 0) / bl3))}。\n` +
+               `你的等比虧損約 -$${n(Math.abs(t.profit) * copyMult)}。\n` +
                `這是模式改變的第一個訊號 — 留意接下來幾筆。` });
         }
       }
@@ -471,7 +513,7 @@ async function check(rootState, trader) {
             t: `🚨 建議調小 Max lot — 勝率劣化`,
             b: `近 20 筆勝率 ${n(wr * 100, 0)}%(他的歷史是 95%)。\n` +
                `策略碰到了沒見過的行情。\n\n` +
-               `App → 跟單設定 → Max lot 砍半(0.10 → 0.05):風險即時減半、可逆。\n` +
+               `App → 跟單設定 → Max lot 砍半(${n(lotCap)} → ${n(lotCap / 2)}):風險即時減半、可逆。\n` +
                `更保守:直接停止跟單(會市價平掉所有部位)。` });
         } else if (wr >= 0.75) state.wrLow = false;
       }
@@ -485,7 +527,7 @@ async function check(rootState, trader) {
         alerts.push({ key: 'fast-drift', p: 'urgent', crit: true, tags: 'rotating_light',
           t: `🚨 建議調小 Max lot — 近 5 筆虧了 ${losses5} 筆`,
           b: `他生涯 44 筆才虧 2 筆 — 這個密度是模式斷裂,不是雜訊。\n\n` +
-             `App → 跟單設定 → Max lot 砍半(0.10 → 0.05):風險即時減半、可逆。\n` +
+             `App → 跟單設定 → Max lot 砍半(${n(lotCap)} → ${n(lotCap / 2)}):風險即時減半、可逆。\n` +
              `更保守:直接停止跟單(會市價平掉所有部位)。` });
       } else if (last5.length >= 5 && losses5 <= 1) state.fastDrift = false;
 
@@ -506,7 +548,7 @@ async function check(rootState, trader) {
             t: `🚨 建議調小 Max lot — 近 20 筆淨損益 $${n(net20)}`,
             b: `他的基準是 20 筆約 +$226(你的等比 ≈ +$900)。\n` +
                `現在是 $${n(net20)} — 勝率再高,錢沒進來就是模式壞了。\n\n` +
-               `App → Max lot 砍半(0.10 → 0.05),或停止跟單。` });
+               `App → Max lot 砍半(${n(lotCap)} → ${n(lotCap / 2)}),或停止跟單。` });
         } else if (net20 > 50) state.bleedLow = false;
       }
       // (e) realized drawdown from the profit peak since watching began —
@@ -518,24 +560,40 @@ async function check(rootState, trader) {
       const ddLine = +trader.ddAlertHisUsd || 40;
       if (dd >= ddLine && !state.ddHit) {
         state.ddHit = true;
-        const mult = (state.curMyLot || 0) / bl3 || 1;
+        const mult = copyMult || 1;
         alerts.push({ key: `dd-${Math.round(state.cumPeak)}`, p: 'urgent', crit: true, tags: 'rotating_light',
           t: `🚨 建議調小 Max lot — 已實現回撤 -$${n(dd * mult)}`,
           b: `他從獲利高點回吐 $${n(dd)}(你的等比約 -$${n(dd * mult)})。\n` +
              `沒有單一事件夠大,但累積方向錯了。\n\n` +
-             `App → Max lot 砍半(0.10 → 0.05),或停止跟單。` });
+             `App → Max lot 砍半(${n(lotCap)} → ${n(lotCap / 2)}),或停止跟單。` });
       } else if (dd < ddLine / 2) state.ddHit = false;
       }
 
-      // (d) fees drag on the equity projection: $6 per lot round-trip, measured
-      //     from the first live fill ($0.60 at 0.10 lots).
+      // (f) the projection's inputs: fees at the measured $6/lot round-trip,
+      //     and trade PnL at the lot multiple in force, 20% share off wins.
       state.feeSinceAnchor = (state.feeSinceAnchor || 0) + fresh.length * (state.curMyLot || 0) * 6;
-
-      // Blindness of the open view is established fact (see above), so this is
-      // bookkeeping rather than news — track it, do not alarm on every trade.
-      if (blind.length) state.blindCount = (state.blindCount || 0) + blind.length;
+      state.pnlSinceAnchor = (state.pnlSinceAnchor || 0) + chrono.reduce((a, t) =>
+        a + (t.profit > 0 ? t.profit * copyMult * 0.8 : t.profit * copyMult), 0);
     }
     state.histSeeded = true;
+  }
+
+  // Deferred cap-raise emission — the regime flags are now this pass's.
+  if (pendingCapraise && MY_EQUITY > 0) {
+    const { stepsOver, rawSteps, myEqNow } = pendingCapraise;
+    const recentLoss = state.lastRealLossAt && now - state.lastRealLossAt < 3 * 864e5;
+    if (!state.wrLow && !recentLoss) {
+      const newCap = rawSteps / 100;
+      alerts.push({ key: `capraise-${rawSteps}`, p: 'default', cool: 1440, tags: 'chart_with_upwards_trend',
+        t: `📈 獲利已長到可調高 Max lot`,
+        b: `推估權益 $${n(myEqNow)} → 自然手數 ${n(newCap)},上限還釘在 ${n(lotCap)}。\n` +
+           `App 把 Max lot 調到 ${n(newCap)} 可讓獲利投入運轉` +
+           `(約 +${n(stepsOver / (lotCap * 100) * 100, 0)}% 月獲利)。\n` +
+           `⚠️ 風險等比放大:壞堆疊尾部從約 -$${n(lotCap * 5 * 3000, 0)} 變 -$${n(newCap * 5 * 3000, 0)}。\n` +
+           `⚠️ 每單停損也要同步調到 $${n(newCap * 3000, 0)} — 停損是美元定義的,` +
+           `只調手數會讓觸發線變緊($30/oz → $${n(300 / (newCap * 100), 1)}/oz)。\n\n` +
+           `調整後回報:①App 新上限+新停損 ②實際權益,我同步 config。` });
+    }
   }
 
   // 2. new entries — report how stale our reference price already is, rather
@@ -574,23 +632,27 @@ async function check(rootState, trader) {
   //     actually comes from. TraderEthan has held five at a time, which at this
   //     sizing is 108x and a liquidation only $40 of gold away.
   if (MY_EQUITY > 0 && gold != null && open.length) {
-    const cap = +trader.maxLotPerTrade || Infinity;
-    const ratio0 = MY_EQUITY / eq;
+    // Uses the drift-corrected projection like the cliff maths does — the raw
+    // snapshot overstated leverage by exactly the unreported drift. Per-order
+    // sizing comes from the shared ctx, not a hardcoded 0.02.
+    const myEqRefX = state.myEqEstimate || MY_EQUITY;
+    const ratioX = myEqRefX / eq;
     const myLots = open.reduce((sum, p) =>
-      sum + Math.min(Math.floor(p.lots * ratio0 * 100) / 100, cap), 0);
+      sum + Math.min(Math.floor(p.lots * ratioX * 100) / 100, lotCap), 0);
+    const perOrderLot = Math.max(state.curMyLot || 0, 0.01);
     const notional = myLots * OZ_PER_LOT * gold;
-    const lev = notional / MY_EQUITY;
+    const lev = notional / myEqRefX;
     const levCrit = trader.levCrit ?? 80;
     const levWarn = trader.levWarn ?? 55;
     if (lev >= levWarn) {
-      const liqMove = MY_EQUITY / (myLots * OZ_PER_LOT);
+      const liqMove = myEqRefX / (myLots * OZ_PER_LOT);
       alerts.push({ key: `expo-${Math.round(lev / 10)}`, p: 'urgent', crit: lev >= levCrit,
-        tags: 'warning',
+        cool: 180, tags: 'warning',
         t: `${lev >= levCrit ? '🚨' : '⚠️'} 曝險 ${n(lev, 0)}x`,
         b: `他同時開 ${open.length} 單 → 你 ${n(myLots)} 手 = $${n(notional, 0)} 名目\n` +
-           `你的權益 $${n(MY_EQUITY)}\n\n` +
+           `你的權益約 $${n(myEqRefX)}\n\n` +
            `金價再逆走 $${n(liqMove, 0)} 就會清算。\n` +
-           `每單停損 $${trader.stopPerOrder || '?'} 會在 $${n((trader.stopPerOrder || 0) / (Math.min(Math.floor(0.02 * ratio0 * 100) / 100, cap) * OZ_PER_LOT), 0)} 先觸發。` });
+           `每單停損 $${trader.stopPerOrder || '?'} 會在 $${n((trader.stopPerOrder || 0) / (perOrderLot * OZ_PER_LOT), 0)} 先觸發。` });
     }
   }
 
@@ -608,8 +670,11 @@ async function check(rootState, trader) {
     const float = ref == null ? null : leg.reduce((s, p) =>
       s + (side === 'long' ? ref - p.openPrice : p.openPrice - ref) * p.lots * OZ_PER_LOT, 0);
     const myEqRef = state.myEqEstimate || MY_EQUITY || 0;
-    const bad = float != null && myEqRef > 0 && float < -myEqRef * CFG.emergencyFloatPct;
-    alerts.push({ key: `ladder-${side}-${leg.length}`, p: 'urgent', crit: bad,
+    // Same scale trap as the batch emergency: `float` is HIS-scale dollars.
+    const multL = (state.curMyLot || 0) / baseLot;
+    const floatUser = float != null ? float * multL : null;
+    const bad = floatUser != null && myEqRef > 0 && multL > 0 && floatUser < -myEqRef * CFG.emergencyFloatPct;
+    alerts.push({ key: `ladder-${side}-${leg.length}`, p: 'urgent', crit: bad, cool: 120,
       tags: 'chart_with_downwards_trend',
       t: `${bad ? '🚨' : '🔻'} 加碼攤平中(${side === 'long' ? '多' : '空'} ${leg.length} 單)`,
       b: `入場 ${n(px[0])} ~ ${n(px[px.length - 1])} (跨距 $${n(spread)})\n` +
@@ -626,7 +691,7 @@ async function check(rootState, trader) {
     // stop attached means nobody is minding it, and nothing will close it but him.
     const abandoned = ageH >= CFG.emergencyStaleHours && !oldest.sl;
     if (ageH >= CFG.staleHours) {
-      alerts.push({ key: `stale-${oldest.id}`, p: 'high', crit: abandoned, tags: 'hourglass',
+      alerts.push({ key: `stale-${oldest.id}`, p: 'high', crit: abandoned, cool: 360, tags: 'hourglass',
         t: `${abandoned ? '🚨 部位無人看管' : '⏳ 部位已持有'} ${n(ageH, 1)} 小時`,
         b: `${oldest.side === 'long' ? '多' : '空'} ${n(oldest.lots)} 手 @ ${n(oldest.openPrice)}\n` +
            `中位持倉只有 15 分鐘 — 這筆走反了。\n停損 ${oldest.sl ? n(oldest.sl) : '未設'}` +
@@ -634,16 +699,12 @@ async function check(rootState, trader) {
     }
   }
 
-  // 5. back from the announced break.
+  // 5. quiet-period tracking. The bell itself now rings from section 1b on the
+  //    first CLOSE after a quiet spell — the open view that used to gate it is
+  //    blind, so the old condition could never be true. lastOrderTime also lags
+  //    hours behind reality, so quietH is a coarse signal, fine for a 12h bar.
   const quietH = (now - lastOrder) / 3.6e6;
-  if (state.wasQuiet && fresh.length) {
-    alerts.push({ key: 'resumed', p: 'high', tags: 'bell',
-      t: '🔔 他恢復交易了',
-      b: `沉寂 ${n(state.quietPeakH || quietH, 1)} 小時後重新開單。` +
-         (MY_EQUITY > 0 ? `\n你的比例 ${n((state.myEqEstimate || MY_EQUITY) / eq, 3)}x` : '') });
-    state.quietPeakH = 0;
-  }
-  state.wasQuiet = quietH >= CFG.quietHours;
+  if (quietH >= CFG.quietHours) state.wasQuiet = true;
   if (state.wasQuiet) state.quietPeakH = Math.max(state.quietPeakH || 0, quietH);
 
   // 6. His equity is the DENOMINATOR of your lot size, and he controls it.
@@ -655,9 +716,8 @@ async function check(rootState, trader) {
   //    interest. This is the one input to your risk that you neither set nor
   //    are told about.
   if (state.lastEquity && eq > 0) {
-    const bl2 = +trader.baseLot || 0.01;
-    const cp2 = +trader.maxLotPerTrade || Infinity;
-    const lotAt = (hisEq) => Math.min(Math.floor(bl2 * ((MY_EQUITY || 0) / hisEq) * 100) / 100, cp2);
+    const eqMine = state.myEqEstimate || MY_EQUITY || 0;
+    const lotAt = (hisEq) => Math.min(Math.floor(baseLot * (eqMine / hisEq) * 100) / 100, lotCap);
     const before = lotAt(state.lastEquity);
     const after = lotAt(eq);
     const moved = Math.abs(eq - state.lastEquity) / state.lastEquity;
@@ -695,7 +755,8 @@ async function check(rootState, trader) {
   }
 
   const burst = (state.burstUntil || 0) > now;
-  return { alerts, eq, open, gold, quietH, burst, name: trader.name, id, daysLeft: state.daysLeft,
+  return { alerts, eq, open, gold, quietH, burst, histOk, copied: MY_EQUITY > 0,
+    name: trader.name, id, daysLeft: state.daysLeft,
     ratio: MY_EQUITY > 0 ? (state.myEqEstimate || MY_EQUITY) / eq : null,
     myEq: state.myEqEstimate || MY_EQUITY };
 }
@@ -733,48 +794,80 @@ async function check(rootState, trader) {
 
   const deadline = Date.now() + LOOP_MINUTES * 60000;
   const COOLDOWN = (CFG.cooldownMin || 60) * 60000;
-  let pass = 0, failStreak = 0;
+  let pass = 0;
+  // Per-trader failure accounting: a shared counter reset by ANY success let
+  // one broken trader hide behind the other working one forever.
+  const failStreaks = {}, rateLimitedUntil = {};
+  // Copy accounts drive the cadence; a watch-only trader polled at full tempo
+  // was consuming half the 429-prone budget and dragging both traders into
+  // bursts nobody is copying.
+  const copiedTraders = TRADERS.filter((t) => +t.myEquity > 0);
+  const cadenceTraders = copiedTraders.length ? copiedTraders : TRADERS;
+  // Traders removed from config leave orphaned per-trader state behind.
+  if (state.byTrader) {
+    const valid = new Set(TRADERS.map((t) => t.portfolioId));
+    for (const k of Object.keys(state.byTrader)) if (!valid.has(k)) delete state.byTrader[k];
+  }
+  let lastHistOk = false;
 
   do {
     pass++;
     const results = [];
 
-    // Each trader is polled in turn. One failing — a rate limit, a trader who
-    // stopped publishing — must not stop the others being watched.
     for (const trader of TRADERS) {
+      const tid = trader.portfolioId;
+      const watchOnly = !(+trader.myEquity > 0);
+      // Watch-only traders get every 4th pass — minutes of latency on a feed
+      // that requires no action, in exchange for half the request volume.
+      if (watchOnly && pass % 4 !== 1) continue;
+      if ((rateLimitedUntil[tid] || 0) > Date.now()) {
+        log({ pass, trader: trader.name, skipped: 'rate-limited backoff' });
+        continue;
+      }
       try {
         results.push(await check(state, trader));
-        failStreak = 0;
+        failStreaks[tid] = 0;
       } catch (e) {
-        failStreak++;
-        log({ pass, trader: trader.name, error: e.message, failStreak });
-        if (failStreak >= 3) {
-          await notify('⚠️ CFD 監控連續失敗',
-            `連續 ${failStreak} 次無法取得資料:\n${e.message}`, 'high', 'warning');
-          await sleep(300000);
-          failStreak = 0;
+        failStreaks[tid] = (failStreaks[tid] || 0) + 1;
+        log({ pass, trader: trader.name, error: e.message, failStreak: failStreaks[tid] });
+        // A 429 means STOP, not retry harder — cfd.js already burned its
+        // per-call retries; piling more requests into a throttle window is how
+        // an IP block happens.
+        if (/429|rate limit/i.test(e.message)) rateLimitedUntil[tid] = Date.now() + 5 * 60000;
+        if (failStreaks[tid] === 3) {
+          await notify(`⚠️ 監控連續失敗 · ${trader.name}`,
+            `連續 ${failStreaks[tid]} 次無法取得資料:\n${e.message}`, 'high', 'warning');
         }
       }
       if (TRADERS.length > 1) await sleep(1500);
     }
 
     if (results.length) {
-      await heartbeat();
+      // The heartbeat asserts "monitoring works", not "the process is alive" —
+      // if every history fetch failed, the dead man's switch SHOULD fire.
+      lastHistOk = results.some((r) => r.histOk);
+      if (lastHistOk) await heartbeat();
       const sent = state.sent || {};
       for (const r of results) {
         log({ pass, trader: r.name, eq: r.eq, myEq: r.myEq ? +r.myEq.toFixed(2) : null,
           open: r.open.length, gold: r.gold,
           ratio: r.ratio ? +r.ratio.toFixed(4) : null, quietH: +r.quietH.toFixed(1),
           daysLeft: r.daysLeft != null ? +r.daysLeft.toFixed(1) : null,
-          alerts: r.alerts.map((a) => a.key) });
+          // Keys can embed sizing/step numbers; digits are stripped so the
+          // public Actions log carries the alert TYPE without the figures.
+          alerts: r.alerts.map((a) => (VERBOSE ? a.key : a.key.replace(/\d+/g, '#'))) });
 
         for (const a of r.alerts) {
           // Namespaced so the same condition on two traders alerts twice.
+          // Standing conditions carry their own longer `cool` (minutes).
           const key = `${r.id}|${a.key}`;
-          if (sent[key] && Date.now() - sent[key] < COOLDOWN) continue;
+          const cd = (a.cool != null ? a.cool * 60000 : COOLDOWN);
+          if (sent[key] && Date.now() - sent[key] < cd) continue;
           const title = r.name ? `${a.t} · ${r.name}` : a.t;
-          await notify(title, a.b, a.p, a.tags, !!a.crit, traderUrl(r.id));
-          sent[key] = Date.now();
+          const delivered = await notify(title, a.b, a.p, a.tags, !!a.crit, traderUrl(r.id));
+          // A critical alert that failed BOTH channels must retry next pass,
+          // not sit out its cooldown while the condition worsens.
+          if (delivered || !a.crit) sent[key] = Date.now();
         }
       }
       for (const k of Object.keys(sent)) if (Date.now() - sent[k] > 7 * 864e5) delete sent[k];
@@ -782,12 +875,19 @@ async function check(rootState, trader) {
       saveState(state);
     }
 
-    // Tightest cadence any trader calls for. The open view is blind, so
-    // "recently closed something" is the working signal that he is active.
-    const anyOpen = results.some((r) => r.open.length > 0 || r.burst);
-    const wait = cadenceSec(anyOpen, TRADERS) * 1000;
+    const anyOpen = results.some((r) => r.copied && (r.open.length > 0 || r.burst));
+    const wait = cadenceSec(anyOpen, cadenceTraders) * 1000;
     if (Date.now() + wait > deadline) break;
-    await sleep(wait);
+    // Chunked sleep: long cadences (weekend 30 min) starved the heartbeat and
+    // forced the dead man's grace window wide open. Beating every ≤5 min keeps
+    // the external check tight; heartbeat() self-limits to every 10 min.
+    let remaining = wait;
+    while (remaining > 0 && Date.now() < deadline) {
+      const slice = Math.min(remaining, 300000);
+      await sleep(slice);
+      remaining -= slice;
+      if (lastHistOk) await heartbeat();
+    }
   } while (Date.now() < deadline);
 
   saveState(state);
