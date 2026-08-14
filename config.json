@@ -129,5 +129,6 @@
   0,
   1
  ],
- "_sleep": "台北 23:00-10:00 = UTC 15:00-02:00。critical 全天候 emergency(重複到確認);此時段用你的大聲鈴,清醒時段強制 vibrate 音效。"
+ "_sleep": "台北 23:00-10:00 = UTC 15:00-02:00。critical 全天候 emergency(重複到確認);此時段用你的大聲鈴,清醒時段強制 vibrate 音效。",
+ "pushoverRetryVibrateSec": 30
 }

@@ -169,7 +169,10 @@ function pushover(title, body, { critical = false, url = null, wake = null } = {
     token: PO_TOKEN, user: PO_USER, title, message: body,
     priority: critical ? '2' : '0',
     ...(critical ? {
-      retry: String(CFG.pushoverRetrySec ?? 60),
+      // Pushover's hard floor for emergency retries is 30 seconds — nothing
+      // faster is possible through the API. The silent path runs at the floor
+      // so a pocketed phone buzzes twice a minute; the loud path stays at 60s.
+      retry: String(loud ? (CFG.pushoverRetrySec ?? 60) : (CFG.pushoverRetryVibrateSec ?? 30)),
       expire: String(CFG.pushoverExpireSec ?? 1800),
       ...(loud ? {} : { sound: 'vibrate' }),
     } : {}),
