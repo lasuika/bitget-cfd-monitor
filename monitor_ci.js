@@ -52,6 +52,21 @@ const TEST_ALERT = !!process.env.TEST_ALERT;
 const MY_EQUITY = +(process.env.MY_EQUITY || CFG.myEquity || 0);
 const MY_EQUITY_AT = process.env.MY_EQUITY_AT || CFG.myEquityAt || null;
 
+// One MT5 copy account is created per trader you follow, funded and sized
+// separately, so each needs its own equity figure and its own cliff maths.
+// Older single-trader configs still work.
+const TRADERS = CFG.traders && CFG.traders.length ? CFG.traders : [{
+  name: CFG.name, portfolioId: CFG.portfolioId,
+  myEquity: MY_EQUITY, myEquityAt: MY_EQUITY_AT,
+}];
+// MY_EQUITY_<N> overrides the Nth trader's equity from a workflow variable.
+for (let i = 0; i < TRADERS.length; i++) {
+  const v = +(process.env[`MY_EQUITY_${i + 1}`] || 0);
+  if (v > 0) TRADERS[i].myEquity = v;
+  const a = process.env[`MY_EQUITY_AT_${i + 1}`];
+  if (a) TRADERS[i].myEquityAt = a;
+}
+
 const n = (v, d = 2) => (v == null || !Number.isFinite(+v) ? '—' : (+v).toFixed(d));
 
 // Actions logs are public on a public repo, and unlimited Actions minutes are
@@ -166,17 +181,17 @@ function heartbeat(force = false, suffix = '') {
   });
 }
 
-const TRADER_URL = `https://www.bitget.com/copy-trading/cfd-trader/${CFG.portfolioId}`;
+const traderUrl = (id) => `https://www.bitget.com/copy-trading/cfd-trader/${id}`;
 
 // Emergencies go out on both channels — if one is down you still get told.
-async function notify(title, body, priority = 'default', tags = '', critical = false) {
+async function notify(title, body, priority = 'default', tags = '', critical = false, url = null) {
   const full = critical ? `${body}\n\n→ 只有你能處理:開 Bitget App 停止跟單或平倉。` : body;
   // An emergency goes out on every configured channel at once. They fail in
   // different ways — one server down, one permission not granted — and this is
   // the one alert that must not be the one that got lost.
   const [n1, n2] = await Promise.all([
     ntfy(title, full, critical ? 'max' : priority, tags),
-    critical ? pushover(title, full, { critical, url: TRADER_URL }) : Promise.resolve(null),
+    critical ? pushover(title, full, { critical, url }) : Promise.resolve(null),
   ]);
   log({ sent: VERBOSE ? title : '(內容僅送推播)', ntfy: n1, pushover: n2, critical });
   if (critical && !n1 && !n2) log({ CRITICAL_DELIVERY_FAILED: true });
@@ -198,10 +213,16 @@ const goldNow = () => pub('/api/v2/mix/market/ticker?symbol=XAUUSDT&productType=
   .then((r) => { const t = (r.data || [])[0]; return t ? +t.lastPr : null; });
 
 // --- one pass -----------------------------------------------------------
-async function check(state) {
+async function check(rootState, trader) {
   const now = Date.now();
   const alerts = [];
-  const id = CFG.portfolioId;
+  const id = trader.portfolioId;
+  // Per-trader state, so one trader's dedup and anchors cannot bleed into another.
+  rootState.byTrader = rootState.byTrader || {};
+  const state = (rootState.byTrader[id] = rootState.byTrader[id] || {});
+  const MY_EQUITY = +trader.myEquity || 0;
+  const MY_EQUITY_AT = trader.myEquityAt || null;
+  const TAG = trader.name ? `[${trader.name}] ` : '';
 
   const perf = await cfd.performance(id);
   await sleep(700);
@@ -459,7 +480,7 @@ async function check(state) {
   if (state.wasQuiet) state.quietPeakH = Math.max(state.quietPeakH || 0, quietH);
 
   state.lastEquity = eq;
-  return { alerts, eq, open, gold, quietH, daysLeft: state.daysLeft,
+  return { alerts, eq, open, gold, quietH, name: trader.name, id, daysLeft: state.daysLeft,
     ratio: MY_EQUITY > 0 ? (state.myEqEstimate || MY_EQUITY) / eq : null,
     myEq: state.myEqEstimate || MY_EQUITY };
 }
@@ -501,41 +522,54 @@ async function check(state) {
 
   do {
     pass++;
-    let r = null;
-    try {
-      r = await check(state);
-      failStreak = 0;
-    } catch (e) {
-      failStreak++;
-      log({ pass, error: e.message, failStreak });
-      // Repeated failures usually mean rate limiting; stand well back.
-      if (failStreak >= 3) {
-        await notify('⚠️ CFD 監控連續失敗',
-          `連續 ${failStreak} 次無法取得資料:\n${e.message}`, 'high', 'warning');
-        await sleep(300000);
+    const results = [];
+
+    // Each trader is polled in turn. One failing — a rate limit, a trader who
+    // stopped publishing — must not stop the others being watched.
+    for (const trader of TRADERS) {
+      try {
+        results.push(await check(state, trader));
         failStreak = 0;
+      } catch (e) {
+        failStreak++;
+        log({ pass, trader: trader.name, error: e.message, failStreak });
+        if (failStreak >= 3) {
+          await notify('⚠️ CFD 監控連續失敗',
+            `連續 ${failStreak} 次無法取得資料:\n${e.message}`, 'high', 'warning');
+          await sleep(300000);
+          failStreak = 0;
+        }
       }
+      if (TRADERS.length > 1) await sleep(1500);
     }
 
-    if (r) {
+    if (results.length) {
       await heartbeat();
-      log({ pass, eq: r.eq, myEq: r.myEq ? +r.myEq.toFixed(2) : null, open: r.open.length, gold: r.gold,
-        ratio: r.ratio ? +r.ratio.toFixed(4) : null, quietH: +r.quietH.toFixed(1),
-        daysLeft: r.daysLeft != null ? +r.daysLeft.toFixed(1) : null,
-        alerts: r.alerts.map((a) => a.key) });
-
       const sent = state.sent || {};
-      for (const a of r.alerts) {
-        if (sent[a.key] && Date.now() - sent[a.key] < COOLDOWN) continue;
-        await notify(a.t, a.b, a.p, a.tags, !!a.crit);
-        sent[a.key] = Date.now();
+      for (const r of results) {
+        log({ pass, trader: r.name, eq: r.eq, myEq: r.myEq ? +r.myEq.toFixed(2) : null,
+          open: r.open.length, gold: r.gold,
+          ratio: r.ratio ? +r.ratio.toFixed(4) : null, quietH: +r.quietH.toFixed(1),
+          daysLeft: r.daysLeft != null ? +r.daysLeft.toFixed(1) : null,
+          alerts: r.alerts.map((a) => a.key) });
+
+        for (const a of r.alerts) {
+          // Namespaced so the same condition on two traders alerts twice.
+          const key = `${r.id}|${a.key}`;
+          if (sent[key] && Date.now() - sent[key] < COOLDOWN) continue;
+          const title = r.name ? `${a.t} · ${r.name}` : a.t;
+          await notify(title, a.b, a.p, a.tags, !!a.crit, traderUrl(r.id));
+          sent[key] = Date.now();
+        }
       }
       for (const k of Object.keys(sent)) if (Date.now() - sent[k] > 7 * 864e5) delete sent[k];
       state.sent = sent;
       saveState(state);
     }
 
-    const wait = cadenceSec(r ? r.open.length > 0 : false) * 1000;
+    // Tightest cadence any trader calls for: if one is in a position, poll fast.
+    const anyOpen = results.some((r) => r.open.length > 0);
+    const wait = cadenceSec(anyOpen) * 1000;
     if (Date.now() + wait > deadline) break;
     await sleep(wait);
   } while (Date.now() < deadline);

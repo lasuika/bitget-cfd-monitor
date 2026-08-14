@@ -1,23 +1,33 @@
 {
- "name": "ManuGoldPrime (XAUUSD)",
- "portfolioId": "1423679390962597888",
+ "traders": [
+  {
+   "name": "ManuGoldPrime",
+   "portfolioId": "1423679390962597888",
+   "myEquity": 2147.83,
+   "myEquityAt": "2026-08-14"
+  },
+  {
+   "name": "TraderEthan",
+   "portfolioId": "1469255871432253440",
+   "myEquity": 0,
+   "myEquityAt": null,
+   "_note": "他固定開 0.02 手,你的階梯每 $196.79 一階。投入後把 myEquity 填成該跟單帳戶的權益。"
+  }
+ ],
 
- "myEquity": 0,
- "myEquityAt": null,
  "cliffWarnDays": 14,
  "rateMinDays": 2,
-
  "ladderMinLegs": 3,
  "ladderMinSpread": 15,
  "staleHours": 3,
  "emergencyStaleHours": 8,
  "emergencyFloatPct": 0.06,
- "heartbeatMin": 10,
- "pushoverRetrySec": 60,
- "pushoverExpireSec": 1800,
  "quietHours": 12,
  "cooldownMin": 60,
  "resyncDriftPct": 0.12,
+ "heartbeatMin": 10,
+ "pushoverRetrySec": 60,
+ "pushoverExpireSec": 1800,
 
  "pollOpenSec": 45,
  "pollActiveSec": 120,
@@ -27,5 +37,5 @@
  "activeHoursUtc": [0, 1, 7, 8, 9, 11, 12, 13, 14, 16, 17, 18, 19, 20, 22, 23],
  "deadHoursUtc": [3, 4, 5, 21],
 
- "_measured": "activeHoursUtc 涵蓋他 87% 的開單;deadHoursUtc 各佔 <1%(21:00 為 0 筆);週六 0 筆(黃金休市)"
+ "_measured": "時段來自 ManuGoldPrime 972 筆開單:活躍時段涵蓋 87%,deadHours 各佔 <1%(21:00 為 0),週六 0 筆"
 }

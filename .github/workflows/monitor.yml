@@ -106,8 +106,13 @@ jobs:
           HEALTHCHECK_URL: ${{ secrets.HEALTHCHECK_URL }}
           # Set MY_EQUITY under Settings > Secrets and variables > Actions >
           # Variables after depositing. The dispatch input overrides it ad hoc.
-          MY_EQUITY: ${{ inputs.my_equity != '' && inputs.my_equity || vars.MY_EQUITY }}
-          MY_EQUITY_AT: ${{ vars.MY_EQUITY_AT }}
+          # One variable per copy account — each trader you follow gets its own
+          # MT5 account, funded and sized independently, so each needs its own
+          # equity figure for the cliff maths to mean anything.
+          MY_EQUITY_1: ${{ inputs.my_equity != '' && inputs.my_equity || vars.MY_EQUITY_1 }}
+          MY_EQUITY_AT_1: ${{ vars.MY_EQUITY_AT_1 }}
+          MY_EQUITY_2: ${{ vars.MY_EQUITY_2 }}
+          MY_EQUITY_AT_2: ${{ vars.MY_EQUITY_AT_2 }}
           LOOP_MINUTES: '330'
         run: node monitor_ci.js
 
