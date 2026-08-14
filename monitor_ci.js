@@ -206,6 +206,20 @@ async function check(state) {
   const perf = await cfd.performance(id);
   await sleep(700);
   const open = (await cfd.openPositions(id)).map(norm);
+
+  // Second, independent detection path. openPositions() is the endpoint every
+  // alert here reads from, and it has never once been observed returning rows —
+  // three of his trades went unnoticed while the monitor was demonstrably alive
+  // and polling. history is the endpoint that IS proven: 700 trades came out of
+  // it. Closed trades show up here whether or not the open-position view works,
+  // so this both catches what the other path misses and tells us when that path
+  // is blind.
+  let closed = [];
+  state.histPass = (state.histPass || 0) + 1;
+  if (state.histPass % 2 === 1) {
+    await sleep(700);
+    closed = (await cfd.history(id, { maxPages: 1, pageSize: 20 }).catch(() => [])).map(norm);
+  }
   const gold = await goldNow().catch(() => null);
 
   const eq = +perf.totalEquity;
@@ -312,6 +326,54 @@ async function check(state) {
            `目前約 $${n(myEqNow - eq * step)} 沒有在工作。\n\n` +
            `想提高倉位要補到 ${step + 1}.0x = 再加 $${n(topUpTo(step + 1))}。` });
     }
+  }
+
+  // 1b. closed trades seen only in history — the fallback path.
+  const known = state.knownClosed || {};
+  const POLL_S = CFG.pollActiveSec || 120;
+  if (closed.length) {
+    const fresh = closed.filter((t) => t.closeTime && !known[t.id]);
+    for (const t of fresh) known[t.id] = t.closeTime;
+    for (const k of Object.keys(known)) {
+      if (now - known[k] > 3 * 864e5) delete known[k];
+    }
+    state.knownClosed = known;
+
+    // Only meaningful once we have a baseline; the first pass would otherwise
+    // report his entire recent history as new.
+    if (state.histSeeded) {
+      const notable = fresh.filter((t) => (t.closeTime - t.openTime) / 1000 > POLL_S * 2);
+      const everSeenOpen = (t) => !!(state.seen || {})[t.id];
+      const blind = notable.filter((t) => !everSeenOpen(t));
+
+      const realised = fresh.reduce((sum, t) => sum + t.profit, 0);
+      if (fresh.length) {
+        const myEqRef = state.myEqEstimate || MY_EQUITY || 0;
+        const bad = myEqRef > 0 && realised < -myEqRef * CFG.emergencyFloatPct;
+        alerts.push({ key: `closed-${fresh.map((t) => t.id).join(',')}`,
+          p: bad ? 'urgent' : 'default', crit: bad, tags: bad ? 'rotating_light' : 'receipt',
+          t: `${bad ? '🚨' : '📄'} 他平倉 ${fresh.length} 筆 ${realised >= 0 ? '+' : ''}$${n(realised)}`,
+          b: fresh.slice(0, 5).map((t) =>
+            `${t.side === 'long' ? '多' : '空'} ${n(t.lots)} 手 ${n(t.openPrice)}→${n(t.closePrice)} ` +
+            `${t.profit >= 0 ? '+' : ''}$${n(t.profit)} (${n((t.closeTime - t.openTime) / 60000, 1)} 分)`
+          ).join('\n') + (fresh.length > 5 ? `\n…另 ${fresh.length - 5} 筆` : '') });
+      }
+
+      // A trade that ran longer than two poll intervals should have been visible
+      // as an open position. If it never was, the open-position view is blind and
+      // every unrealised-risk alert built on it is silently dead.
+      if (blind.length) {
+        alerts.push({ key: `blind-${blind[0].id}`, p: 'high', tags: 'see_no_evil',
+          t: '⚠️ 開倉偵測可能失效',
+          b: `${blind.length} 筆持倉超過 ${n(POLL_S * 2 / 60, 1)} 分鐘的單,` +
+             `從頭到尾沒被偵測為「持倉中」:\n` +
+             blind.slice(0, 3).map((t) =>
+               `  ${new Date(t.openTime).toISOString().slice(5, 16)} ${n((t.closeTime - t.openTime) / 60000, 1)} 分`
+             ).join('\n') +
+             `\n\n代表加碼梯、部位過久、浮虧這幾個警報目前看不到東西。` });
+      }
+    }
+    state.histSeeded = true;
   }
 
   // 2. new entries — report how stale our reference price already is, rather
