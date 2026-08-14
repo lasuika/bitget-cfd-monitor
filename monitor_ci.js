@@ -454,7 +454,9 @@ async function check(rootState, trader) {
         }
       }
 
-      // (c) rolling win rate over the last 20 closes
+      // (c) shrink-the-cap detectors — all gated on actually copying, since
+      //     "調小 Max lot" is meaningless for a watch-only trader.
+      if (MY_EQUITY > 0) {
       const recent = state.recentResults || [];
       for (const t of chrono) recent.push(t.profit > 0 ? 1 : 0);
       state.recentResults = recent.slice(-20);
@@ -486,6 +488,44 @@ async function check(rootState, trader) {
              `App → 跟單設定 → Max lot 砍半(0.10 → 0.05):風險即時減半、可逆。\n` +
              `更保守:直接停止跟單(會市價平掉所有部位)。` });
       } else if (last5.length >= 5 && losses5 <= 1) state.fastDrift = false;
+
+      // Win rate is a proxy; dollars are the target. A trader can hold a 90%
+      // win rate all the way into ruin if the occasional loss grows large
+      // enough to eat the wins — these two watch the money directly.
+      const pnls = state.recentPnl || [];
+      for (const t of chrono) pnls.push(t.profit);
+      state.recentPnl = pnls.slice(-20);
+      // (d) bleed: his last 20 trades net out at zero or worse, against a
+      //     baseline of roughly +$226. High win rate with no money coming in
+      //     IS the broken pattern, whatever the ratio says.
+      if (state.recentPnl.length >= 20) {
+        const net20 = state.recentPnl.reduce((a, b) => a + b, 0);
+        if (net20 <= 0 && !state.bleedLow) {
+          state.bleedLow = true;
+          alerts.push({ key: 'bleed-20', p: 'urgent', crit: true, tags: 'rotating_light',
+            t: `🚨 建議調小 Max lot — 近 20 筆淨損益 $${n(net20)}`,
+            b: `他的基準是 20 筆約 +$226(你的等比 ≈ +$900)。\n` +
+               `現在是 $${n(net20)} — 勝率再高,錢沒進來就是模式壞了。\n\n` +
+               `App → Max lot 砍半(0.10 → 0.05),或停止跟單。` });
+        } else if (net20 > 50) state.bleedLow = false;
+      }
+      // (e) realized drawdown from the profit peak since watching began —
+      //     catches the slow grind whose every single event dodges the
+      //     per-trade and per-batch thresholds.
+      state.cumPnl = (state.cumPnl || 0) + chrono.reduce((a, t) => a + t.profit, 0);
+      state.cumPeak = Math.max(state.cumPeak || 0, state.cumPnl);
+      const dd = state.cumPeak - state.cumPnl;
+      const ddLine = +trader.ddAlertHisUsd || 40;
+      if (dd >= ddLine && !state.ddHit) {
+        state.ddHit = true;
+        const mult = (state.curMyLot || 0) / bl3 || 1;
+        alerts.push({ key: `dd-${Math.round(state.cumPeak)}`, p: 'urgent', crit: true, tags: 'rotating_light',
+          t: `🚨 建議調小 Max lot — 已實現回撤 -$${n(dd * mult)}`,
+          b: `他從獲利高點回吐 $${n(dd)}(你的等比約 -$${n(dd * mult)})。\n` +
+             `沒有單一事件夠大,但累積方向錯了。\n\n` +
+             `App → Max lot 砍半(0.10 → 0.05),或停止跟單。` });
+      } else if (dd < ddLine / 2) state.ddHit = false;
+      }
 
       // (d) fees drag on the equity projection: $6 per lot round-trip, measured
       //     from the first live fill ($0.60 at 0.10 lots).

@@ -69,7 +69,8 @@
    "_measured": "44 筆:活躍時段涵蓋 95%,UTC 15-23 從未開單;同時最多 5 單(你 0.50 手 = 108x)",
    "_stop": "2026-08-14 依 MAE 精算從 200 調升:兩筆 $18.2 貼著 $20 觸發線,月誤殺 2-3 次;$30 在雜訊包絡外且仍先於清算($40)",
    "baseLot": 0.02,
-   "lossAlertUsd": 5
+   "lossAlertUsd": 5,
+   "ddAlertHisUsd": 40
   }
  ],
  "cliffWarnDays": 14,
