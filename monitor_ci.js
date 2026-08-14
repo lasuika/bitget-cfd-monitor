@@ -221,6 +221,29 @@ function heartbeat(force = false, suffix = '') {
   });
 }
 
+// Self-supersede: deploy hand-over was the last manual fragility — cancel
+// dances left zero-coverage windows, and queued stale-code runs stole the
+// slot. A leg that notices main has moved past its own commit saves state and
+// steps aside, letting the queued newer run take over within seconds.
+function newerCommitExists() {
+  const repo = process.env.GITHUB_REPOSITORY, sha = process.env.GITHUB_SHA;
+  const tok = process.env.GITHUB_TOKEN;
+  if (!repo || !sha) return Promise.resolve(false);   // local runs
+  return new Promise((resolve) => {
+    const req = https.request({
+      hostname: 'api.github.com', path: `/repos/${repo}/commits/heads/main`,
+      headers: { 'User-Agent': 'cfd-monitor', Accept: 'application/vnd.github.sha',
+        ...(tok ? { Authorization: `Bearer ${tok}` } : {}) },
+    }, (res) => {
+      let b = ''; res.on('data', (c) => (b += c));
+      res.on('end', () => resolve(res.statusCode === 200 && b.trim() !== sha));
+    });
+    req.on('error', () => resolve(false));
+    req.setTimeout(8000, () => { req.destroy(); resolve(false); });
+    req.end();
+  });
+}
+
 const traderUrl = (id) => `https://www.bitget.com/copy-trading/cfd-trader/${id}`;
 
 // Emergencies go out on both channels — if one is down you still get told.
@@ -922,6 +945,16 @@ async function check(rootState, trader) {
       for (const k of Object.keys(sent)) if (Date.now() - sent[k] > 7 * 864e5) delete sent[k];
       state.sent = sent;
       saveState(state);
+    }
+
+    // Step aside for a newer deploy (checked at most every 5 minutes).
+    if (Date.now() - (globalThis.__lastShaCheck || 0) > 300000) {
+      globalThis.__lastShaCheck = Date.now();
+      if (await newerCommitExists()) {
+        log({ selfSupersede: true, note: 'newer commit on main; yielding to the queued run' });
+        saveState(state);
+        break;
+      }
     }
 
     const anyOpen = results.some((r) => r.copied && (r.open.length > 0 || r.burst));
