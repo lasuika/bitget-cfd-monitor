@@ -38,6 +38,9 @@ const PO_USER = process.env.PUSHOVER_USER || '';
 // service on a heartbeat and let IT shout when the pings stop. It has to be
 // external: anything hosted here dies in the same failure.
 const HEALTHCHECK_URL = process.env.HEALTHCHECK_URL || '';
+// Tests force the wake path — an alarm test that quietly vibrates because it
+// was run in the afternoon would read as broken.
+const FORCE_WAKE = process.env.TEST_CRITICAL === '1';
 const LOOP_MINUTES = +(process.env.LOOP_MINUTES ?? 50);
 const TEST_ALERT = !!process.env.TEST_ALERT;
 // Your CFD equity, as of MY_EQUITY_AT. Kept in a workflow variable so it can be
@@ -146,15 +149,26 @@ function ntfy(title, body, priority = 'default', tags = '') {
 
 // priority 2 = emergency: repeats every `retry` seconds until acknowledged, or
 // until `expire` elapses. Anything less can be slept through.
-function pushover(title, body, { critical = false, url = null } = {}) {
+// Priority is time-aware, matching the user's client config (default sound =
+// vibrate, high-priority sound = loud): during sleeping hours a critical goes
+// out as emergency — loud, repeating until acknowledged — because waking them
+// is the whole point; during waking hours the same critical rides the default
+// priority, which their phone renders as vibrate. No `sound` override is sent
+// either way, so the app-side sound choices stay in charge.
+function sleepingNow() {
+  const h = new Date().getUTCHours();
+  const hrs = CFG.sleepHoursUtc || [];
+  return hrs.includes(h);
+}
+function pushover(title, body, { critical = false, url = null, wake = null } = {}) {
   if (!PO_TOKEN || !PO_USER) return Promise.resolve(false);
+  const loud = critical && (wake != null ? wake : sleepingNow());
   const form = new URLSearchParams({
     token: PO_TOKEN, user: PO_USER, title, message: body,
-    priority: critical ? '2' : '0',
-    ...(critical ? {
+    priority: loud ? '2' : '0',
+    ...(loud ? {
       retry: String(CFG.pushoverRetrySec ?? 60),
       expire: String(CFG.pushoverExpireSec ?? 1800),
-      sound: 'persistent',
     } : {}),
     ...(url ? { url, url_title: '開啟他的交易頁' } : {}),
   }).toString();
@@ -208,7 +222,7 @@ async function notify(title, body, priority = 'default', tags = '', critical = f
   // the one alert that must not be the one that got lost.
   const [n1, n2] = await Promise.all([
     ntfy(title, full, critical ? 'max' : priority, tags),
-    critical ? pushover(title, full, { critical, url }) : Promise.resolve(null),
+    critical ? pushover(title, full, { critical, url, wake: FORCE_WAKE || null }) : Promise.resolve(null),
   ]);
   log({ sent: VERBOSE ? title : '(內容僅送推播)', ntfy: n1, pushover: n2, critical });
   if (critical && !n1 && !n2) log({ CRITICAL_DELIVERY_FAILED: true });
