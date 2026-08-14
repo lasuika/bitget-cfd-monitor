@@ -31,6 +31,18 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  # Workflow-level on purpose. Job-level concurrency plus a matrix means the
+  # sibling legs share one group and cancel each other: leg 2 queuing evicted a
+  # running leg 1 within 25 seconds of deploy. At workflow level the matrix
+  # serializes via max-parallel alone — the shape that held a 5-hour leg
+  # overnight. Schedule events leave the inputs context empty, so the group
+  # expression safely resolves to 'cfd-monitor' there.
+  group: >-
+    ${{ (inputs.test == true || inputs.test_critical == true || inputs.test_healthcheck == true)
+        && format('oneoff-{0}', github.run_id) || 'cfd-monitor' }}
+  cancel-in-progress: false
+
 jobs:
   # Notification test, kept in its own job so it never queues behind the
   # 22-hour monitoring run — and so it fires once rather than once per leg.
@@ -38,8 +50,6 @@ jobs:
     if: inputs.test == true || inputs.test_critical == true || inputs.test_healthcheck == true
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    concurrency:
-      group: cfd-test-${{ github.run_id }}
     steps:
       - uses: actions/checkout@v4
 
@@ -69,9 +79,6 @@ jobs:
     if: github.event_name == 'schedule' || (inputs.test != true && inputs.test_critical != true && inputs.test_healthcheck != true)
     runs-on: ubuntu-latest
     timeout-minutes: 350
-    concurrency:
-      group: cfd-monitor
-      cancel-in-progress: false
     strategy:
       max-parallel: 1
       fail-fast: false
