@@ -128,8 +128,11 @@ function ntfy(title, body, priority = 'default', tags = '') {
       hostname: 'ntfy.sh', path: `/${NTFY_TOPIC}`, method: 'POST',
       headers: {
         'Content-Length': data.length,
-        Title: Buffer.from(title, 'utf8').toString('base64'),
-        'X-Title-Encoding': 'base64',
+        // HTTP headers are latin-1; ntfy's documented way to carry UTF-8 in the
+        // Title header is an RFC 2047 encoded-word. The previous attempt used a
+        // made-up X-Title-Encoding header, which the server ignored — so every
+        // phone notification arrived titled with raw base64.
+        Title: '=?UTF-8?B?' + Buffer.from(title, 'utf8').toString('base64') + '?=',
         Priority: priority,
         ...(tags ? { Tags: tags } : {}),
       },
