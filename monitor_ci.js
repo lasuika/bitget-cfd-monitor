@@ -241,20 +241,26 @@ async function check(rootState, trader) {
   await sleep(700);
   const open = (await cfd.openPositions(id)).map(norm);
 
-  // Second, independent detection path. openPositions() is the endpoint every
-  // alert here reads from, and it has never once been observed returning rows —
-  // three of his trades went unnoticed while the monitor was demonstrably alive
-  // and polling. history is the endpoint that IS proven: 700 trades came out of
-  // it. Closed trades show up here whether or not the open-position view works,
-  // so this both catches what the other path misses and tells us when that path
-  // is blind.
-  let closed = [];
-  state.histPass = (state.histPass || 0) + 1;
-  if (state.histPass % 2 === 1) {
-    await sleep(700);
-    closed = (await cfd.history(id, { maxPages: 1, pageSize: 20 }).catch(() => [])).map(norm);
-  }
+  // History is the PRIMARY detection path, polled every pass. This is now
+  // proven, not precautionary: leg-1 logs caught five polls landing inside a
+  // 26.8-minute position on 2026-08-14 and every one returned zero rows — the
+  // anonymous currentPosition view hides live positions (standard copy-trade
+  // anti-freeriding), and even lastOrderTime lags until after the close. Closed
+  // trades, by contrast, appear in history within ~3 minutes of closing.
+  await sleep(700);
+  const closed = (await cfd.history(id, { maxPages: 1, pageSize: 20 }).catch(() => [])).map(norm);
   const gold = await goldNow().catch(() => null);
+
+  // Canary: if the open view ever starts returning rows — a Bitget change, or
+  // an authenticated future — the unrealised-risk alerts come back to life,
+  // and that changes the protection posture enough to be worth a notification.
+  if (open.length && !state.openViewAlive) {
+    state.openViewAlive = true;
+    alerts.push({ key: 'open-view-alive', p: 'high', tags: 'eyes',
+      t: '👁 開倉偵測復活了',
+      b: `currentPosition 開始回傳持倉了(${open.length} 筆)。\n` +
+         `加碼梯/部位過久/浮虧警報從現在起真的有作用。` });
+  }
 
   const eq = +perf.totalEquity;
   const lastOrder = +perf.lastOrderTime;
@@ -382,6 +388,9 @@ async function check(rootState, trader) {
 
       const realised = fresh.reduce((sum, t) => sum + t.profit, 0);
       if (fresh.length) {
+        // He works in bursts. A close means he is at the desk — poll tightly
+        // for the next while so the rest of the burst is caught near-realtime.
+        state.burstUntil = now + (CFG.burstMinutes ?? 30) * 60000;
         const myEqRef = state.myEqEstimate || MY_EQUITY || 0;
         const bad = myEqRef > 0 && realised < -myEqRef * CFG.emergencyFloatPct;
         alerts.push({ key: `closed-${fresh.map((t) => t.id).join(',')}`,
@@ -393,19 +402,9 @@ async function check(rootState, trader) {
           ).join('\n') + (fresh.length > 5 ? `\n…另 ${fresh.length - 5} 筆` : '') });
       }
 
-      // A trade that ran longer than two poll intervals should have been visible
-      // as an open position. If it never was, the open-position view is blind and
-      // every unrealised-risk alert built on it is silently dead.
-      if (blind.length) {
-        alerts.push({ key: `blind-${blind[0].id}`, p: 'high', tags: 'see_no_evil',
-          t: '⚠️ 開倉偵測可能失效',
-          b: `${blind.length} 筆持倉超過 ${n(POLL_S * 2 / 60, 1)} 分鐘的單,` +
-             `從頭到尾沒被偵測為「持倉中」:\n` +
-             blind.slice(0, 3).map((t) =>
-               `  ${new Date(t.openTime).toISOString().slice(5, 16)} ${n((t.closeTime - t.openTime) / 60000, 1)} 分`
-             ).join('\n') +
-             `\n\n代表加碼梯、部位過久、浮虧這幾個警報目前看不到東西。` });
-      }
+      // Blindness of the open view is established fact (see above), so this is
+      // bookkeeping rather than news — track it, do not alarm on every trade.
+      if (blind.length) state.blindCount = (state.blindCount || 0) + blind.length;
     }
     state.histSeeded = true;
   }
@@ -548,7 +547,8 @@ async function check(rootState, trader) {
     }
   }
   state.lastEquity = eq;
-  return { alerts, eq, open, gold, quietH, name: trader.name, id, daysLeft: state.daysLeft,
+  const burst = (state.burstUntil || 0) > now;
+  return { alerts, eq, open, gold, quietH, burst, name: trader.name, id, daysLeft: state.daysLeft,
     ratio: MY_EQUITY > 0 ? (state.myEqEstimate || MY_EQUITY) / eq : null,
     myEq: state.myEqEstimate || MY_EQUITY };
 }
@@ -635,8 +635,9 @@ async function check(rootState, trader) {
       saveState(state);
     }
 
-    // Tightest cadence any trader calls for: if one is in a position, poll fast.
-    const anyOpen = results.some((r) => r.open.length > 0);
+    // Tightest cadence any trader calls for. The open view is blind, so
+    // "recently closed something" is the working signal that he is active.
+    const anyOpen = results.some((r) => r.open.length > 0 || r.burst);
     const wait = cadenceSec(anyOpen, TRADERS) * 1000;
     if (Date.now() + wait > deadline) break;
     await sleep(wait);

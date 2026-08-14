@@ -108,5 +108,6 @@
   5,
   21
  ],
- "_measured": "時段來自 ManuGoldPrime 972 筆開單:活躍時段涵蓋 87%,deadHours 各佔 <1%(21:00 為 0),週六 0 筆"
+ "_measured": "時段來自 ManuGoldPrime 972 筆開單:活躍時段涵蓋 87%,deadHours 各佔 <1%(21:00 為 0),週六 0 筆",
+ "burstMinutes": 30
 }
