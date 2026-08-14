@@ -285,13 +285,14 @@ async function check(rootState, trader) {
       state.anchorKey = `${MY_EQUITY}@${MY_EQUITY_AT}`;
       state.anchorHisEq = eq;
       state.anchorMyEq = MY_EQUITY;
+      state.feeSinceAnchor = 0;
     }
     // His equity move, scaled by how many of his lots you mirror, net of the
     // 20% share taken from your gains.
     const stepAtAnchor = Math.max(1, Math.floor(state.anchorMyEq / state.anchorHisEq));
     const hisDelta = eq - state.anchorHisEq;
     const myDelta = hisDelta > 0 ? hisDelta * stepAtAnchor * 0.8 : hisDelta * stepAtAnchor;
-    state.myEqEstimate = MY_EQUITY + myDelta;
+    state.myEqEstimate = MY_EQUITY + myDelta - (state.feeSinceAnchor || 0);
 
     const drift = Math.abs(myDelta) / MY_EQUITY;
     if (drift > CFG.resyncDriftPct) {
@@ -315,59 +316,57 @@ async function check(rootState, trader) {
 
     // Use the projection for the cliff maths — a stale snapshot would keep
     // reporting a ratio you no longer have.
+    //
+    // Denominated in HIS base lot, not a hardcoded 0.01: your copy per order is
+    // floor(baseLot x ratio x 100)/100, optionally pinned by your Max-lot cap.
+    // With a 0.02 base (TraderEthan) the size steps at every HALF integer of
+    // the ratio, and the first live trade confirmed the arithmetic: his 0.02 at
+    // ratio 5.00 arrived as exactly 0.10.
     const myEqNow = state.myEqEstimate || MY_EQUITY;
     const ratio = myEqNow / eq;
-    const step = Math.floor(ratio);          // integer multiple currently held
-    const myLot = step / 100;                // your size for his 0.01 lots
-    const toNextFloor = ratio - step;        // headroom before size drops
+    const baseLot = +trader.baseLot || 0.01;
+    const lotCap = +trader.maxLotPerTrade || Infinity;
+    const rawSteps = Math.floor(baseLot * ratio * 100);   // your lots in 0.01 units
+    const pinned = rawSteps / 100 > lotCap;
+    const myLot = Math.min(rawSteps / 100, lotCap);
+    state.curMyLot = myLot;
+    const floorRatio = rawSteps / (100 * baseLot);        // ratio where size drops a step
     const topUpTo = (r) => eq * r - myEqNow;
 
     state.daysLeft = null;
-    if (ratio < 1.0) {
+    if (rawSteps < 1) {
       alerts.push({ key: 'cliff-below', p: 'urgent', tags: 'rotating_light',
         t: '🔴 跌破跟單門檻 — 你已經跟不到單',
         b: `你 $${n(myEqNow)} ÷ 他 $${n(eq)} = ${n(ratio, 4)}x\n\n` +
-           `他 95% 的單是 0.01 手,乘上你的比例後無條件捨去成 0。\n` +
+           `他的單筆 ${n(baseLot)} 手乘上你的比例後無條件捨去成 0。\n` +
            `現在完全沒有在跟單。\n\n` +
-           `補 $${n(topUpTo(1.05))} → 回到 1.05x(效率 95%)` });
+           `補 $${n(topUpTo(1.05 / (100 * baseLot)))} → 恢復最小跟單` });
+    } else if (pinned) {
+      // Pinned at your own Max-lot cap: ratio drift cannot change your size, so
+      // there is no cliff to count down to, and the capital above the cap is
+      // the deliberate safety buffer — not idleness worth nagging about.
     } else {
-      // A static margin is the wrong trigger: 12% headroom is seven weeks of
-      // warning at his current pace, which just teaches you to ignore the alert.
-      // Warn on TIME instead, using his observed rate.
-      //
-      // The gap closes for a mechanical reason: you mirror his lots, so you earn
-      // what he earns, but the 20% profit share is taken from your side only.
-      // At step lots the gap therefore shrinks by (1 - 0.8 x step/step) of his
-      // gain — 20% of it — every day he makes money.
       let daysLeft = null;
       const oldest = state.eqHist[0];
       const spanDays = oldest ? (now - oldest.t) / 864e5 : 0;
       if (spanDays >= CFG.rateMinDays && eq > oldest.eq) {
         const hisDaily = (eq - oldest.eq) / spanDays;
-        const closingPerDay = 0.2 * hisDaily * step;
-        if (closingPerDay > 0) daysLeft = (myEqNow - eq * step) / closingPerDay;
+        // Your equity mirrors his at (myLot/baseLot) x 0.8 after the share, so
+        // the gap to the next size step closes at 0.2 x floorRatio of his daily
+        // gain — the algebra collapses to this for any base lot.
+        const closingPerDay = 0.2 * floorRatio * hisDaily;
+        if (closingPerDay > 0) daysLeft = (myEqNow - eq * floorRatio) / closingPerDay;
       }
-
-      if (daysLeft != null && daysLeft < CFG.cliffWarnDays) {
-        alerts.push({ key: `cliff-warn-${step}`, p: 'high', tags: 'warning',
+      if (daysLeft != null && daysLeft >= 0 && daysLeft < CFG.cliffWarnDays) {
+        alerts.push({ key: `cliff-warn-${rawSteps}`, p: 'high', tags: 'warning',
           t: `🟡 約 ${n(daysLeft, 0)} 天後掉一階`,
           b: `目前 ${n(ratio, 3)}x,每筆跟 ${n(myLot)} 手。\n` +
-             `跌破 ${step}.00x 會掉到 ${n((step - 1) / 100)} 手` +
-             (step === 1 ? '(= 完全跟不到單)' : `(砍 ${n((1 / step) * 100, 0)}%)`) + `\n\n` +
+             `跌到 ${n(floorRatio, 2)}x 以下會變 ${n((rawSteps - 1) / 100)} 手` +
+             (rawSteps === 1 ? '(= 完全跟不到單)' : `(減 ${n(100 / rawSteps, 0)}%)`) + `\n\n` +
              `依他近 ${n(spanDays, 0)} 天的實際速度推算。\n` +
-             `補 $${n(topUpTo(step + 0.15))} → 回到 ${step}.15x,可再撐一段。` });
+             `補 $${n(topUpTo((rawSteps + 0.3) / (100 * baseLot)))} → 多一步緩衝。` });
       }
       state.daysLeft = daysLeft;
-    }
-
-    // Idle capital is silent — surface it rather than letting it sit unnoticed.
-    const eff = step / ratio;
-    if (step >= 1 && eff < 0.8) {
-      alerts.push({ key: `ineff-${step}`, p: 'low', tags: 'money_with_wings',
-        t: `💤 資金效率只有 ${n(eff * 100, 0)}%`,
-        b: `${n(ratio, 3)}x 和 ${step}.0x 的手數一樣(都是 ${n(myLot)} 手)。\n` +
-           `目前約 $${n(myEqNow - eq * step)} 沒有在工作。\n\n` +
-           `想提高倉位要補到 ${step + 1}.0x = 再加 $${n(topUpTo(step + 1))}。` });
     }
   }
 
@@ -409,6 +408,53 @@ async function check(rootState, trader) {
             `${t.profit >= 0 ? '+' : ''}$${n(t.profit)} (${n((t.closeTime - t.openTime) / 60000, 1)} 分)`
           ).join('\n') + (fresh.length > 5 ? `\n…另 ${fresh.length - 5} 筆` : '') });
       }
+
+      // Regime detectors. A 95%-win trader whose lifetime worst loss is $0.80
+      // is untested by definition; what breaks first is the PATTERN, and these
+      // watch for exactly that.
+      const chrono = [...fresh].sort((a, b) => a.closeTime - b.closeTime);
+      const bl3 = +trader.baseLot || 0.01;
+
+      // (a) his per-order size changed — your copy scales with it 1:1
+      for (const t of chrono) {
+        if (Math.abs(t.lots - bl3) > 1e-9) {
+          alerts.push({ key: `sizechange-${Math.round(t.lots * 100)}`, p: 'high', tags: 'triangular_ruler',
+            t: `📐 他的單筆手數變了:${n(t.lots)}(原 ${n(bl3)})`,
+            b: `你的跟單會等比放大 ${n(t.lots / bl3, 1)} 倍(超出部分由 Max lot 上限擋住)。\n` +
+               `懸崖計算以 ${n(bl3)} 手為基礎 — 若他長期改用新手數,需要更新 baseLot。` });
+        }
+      }
+
+      // (b) first real loss — his historical worst is -$0.80, so anything
+      //     meaningfully deeper is the pattern breaking, not noise.
+      const lossFloor = +trader.lossAlertUsd || 10;
+      for (const t of chrono) {
+        if (t.profit <= -lossFloor) {
+          alerts.push({ key: `realloss-${t.id}`, p: 'high', tags: 'small_red_triangle_down',
+            t: `🔻 出現真實虧損 -$${n(Math.abs(t.profit))}`,
+            b: `${t.side === 'long' ? '多' : '空'} ${n(t.lots)} 手 ${n(t.openPrice)}→${n(t.closePrice)}\n` +
+               `你的等比虧損約 -$${n(Math.abs(t.profit) * ((state.curMyLot || 0) / bl3))}。\n` +
+               `這是模式改變的第一個訊號 — 留意接下來幾筆。` });
+        }
+      }
+
+      // (c) rolling win rate over the last 20 closes
+      const recent = state.recentResults || [];
+      for (const t of chrono) recent.push(t.profit > 0 ? 1 : 0);
+      state.recentResults = recent.slice(-20);
+      if (state.recentResults.length >= 20) {
+        const wr = state.recentResults.reduce((a, b) => a + b, 0) / state.recentResults.length;
+        if (wr < 0.6 && !state.wrLow) {
+          state.wrLow = true;
+          alerts.push({ key: 'winrate-drift', p: 'high', tags: 'chart_with_downwards_trend',
+            t: `📉 近 20 筆勝率掉到 ${n(wr * 100, 0)}%`,
+            b: `他的歷史勝率 95%。連續劣化代表策略碰到了沒見過的行情。\n考慮減碼或暫停跟單。` });
+        } else if (wr >= 0.75) state.wrLow = false;
+      }
+
+      // (d) fees drag on the equity projection: $6 per lot round-trip, measured
+      //     from the first live fill ($0.60 at 0.10 lots).
+      state.feeSinceAnchor = (state.feeSinceAnchor || 0) + fresh.length * (state.curMyLot || 0) * 6;
 
       // Blindness of the open view is established fact (see above), so this is
       // bookkeeping rather than news — track it, do not alarm on every trade.
@@ -534,18 +580,21 @@ async function check(rootState, trader) {
   //    interest. This is the one input to your risk that you neither set nor
   //    are told about.
   if (state.lastEquity && eq > 0) {
-    const before = Math.floor((MY_EQUITY || 0) / state.lastEquity);
-    const after = Math.floor((MY_EQUITY || 0) / eq);
+    const bl2 = +trader.baseLot || 0.01;
+    const cp2 = +trader.maxLotPerTrade || Infinity;
+    const lotAt = (hisEq) => Math.min(Math.floor(bl2 * ((MY_EQUITY || 0) / hisEq) * 100) / 100, cp2);
+    const before = lotAt(state.lastEquity);
+    const after = lotAt(eq);
     const moved = Math.abs(eq - state.lastEquity) / state.lastEquity;
     if (MY_EQUITY > 0 && after !== before) {
-      alerts.push({ key: `lotstep-${after}`, p: 'urgent', crit: after > before,
+      alerts.push({ key: `lotstep-${Math.round(after * 100)}`, p: 'urgent', crit: after > before,
         tags: 'chart_with_upwards_trend',
         t: `${after > before ? '🚨 你的部位變大了' : '🔻 你的部位變小了'}`,
         b: `他的權益 $${n(state.lastEquity)} → $${n(eq)}\n` +
-           `你的手數 ${n(before / 100)} → ${n(after / 100)}` +
-           (after > before ? `(放大 ${n(after / Math.max(before, 1), 1)} 倍)` : '') + `\n\n` +
+           `你的每筆手數 ${n(before)} → ${n(after)}` +
+           (after > before ? `(放大 ${n(after / Math.max(before, 0.01), 1)} 倍)` : '') + `\n\n` +
            (after > before
-             ? '你什麼都沒做,曝險就增加了 — 他把錢轉出去,分母變小。\n要維持原本的部位,得往你的跟單帳戶加錢。'
+             ? '你什麼都沒做,曝險就增加了 — 他的權益縮小,分母變小。\n(超出 Max lot 上限的部分已被擋住。)'
              : '他的權益變大了,你的部位被稀釋。') });
     } else if (moved > 0.25) {
       alerts.push({ key: `eq-move-${Math.round(eq / 100)}`, p: 'default', tags: 'information_source',
@@ -555,6 +604,21 @@ async function check(rootState, trader) {
     }
   }
   state.lastEquity = eq;
+  // Sample maturity: 44 trades was a snapshot, not a record. Nudge a re-run of
+  // the full analysis as the sample grows instead of trusting day-7 statistics.
+  const tot = +perf.totalTrades || 0;
+  if (tot && MY_EQUITY > 0) {
+    for (const m of [100, 150, 200, 300]) {
+      if (tot >= m && (state.milestone || 0) < m) {
+        state.milestone = m;
+        alerts.push({ key: `milestone-${m}`, p: 'default', tags: 'dart',
+          t: `🎯 他的樣本到 ${m} 筆了`,
+          b: `統計基礎比你進場時(44 筆)厚了 ${n(m / 44, 1)} 倍。\n值得重跑一次完整分析,再決定加碼、維持或退出。` });
+        break;
+      }
+    }
+  }
+
   const burst = (state.burstUntil || 0) > now;
   return { alerts, eq, open, gold, quietH, burst, name: trader.name, id, daysLeft: state.daysLeft,
     ratio: MY_EQUITY > 0 ? (state.myEqEstimate || MY_EQUITY) / eq : null,
