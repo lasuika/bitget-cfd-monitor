@@ -92,15 +92,26 @@ const saveState = (s) => fs.writeFileSync(STATE_FILE, JSON.stringify(s, null, 1)
 const ACTIVE_HOURS = new Set(CFG.activeHoursUtc);
 const DEAD_HOURS = new Set(CFG.deadHoursUtc);
 
-function cadenceSec(hasOpen, now = new Date()) {
+// Traders keep different hours, and pooling them wastes the request budget on
+// times nobody trades. TraderEthan has never opened between 15:00 and 23:00 UTC;
+// ManuGoldPrime does most of his work there. Poll fast only when the trader in
+// question is actually likely to be at the desk.
+function cadenceSec(hasOpen, traders = TRADERS, now = new Date()) {
   const dow = now.getUTCDay(), h = now.getUTCHours();
   // Gold CFD closes for the weekend: Friday ~21:00 UTC to Sunday ~22:00 UTC.
   if (dow === 6) return 1800;                        // Saturday: market shut
   if (dow === 0 && h < 21) return 1800;              // Sunday before reopen
-  if (hasOpen) return CFG.pollOpenSec;               // he is in a trade
-  if (DEAD_HOURS.has(h)) return CFG.pollDeadSec;
-  if (ACTIVE_HOURS.has(h)) return CFG.pollActiveSec;
-  return CFG.pollIdleSec;
+  if (hasOpen) return CFG.pollOpenSec;               // someone is in a trade
+  const active = traders.some((t) => {
+    const hrs = t.activeHoursUtc || CFG.activeHoursUtc;
+    return hrs && hrs.includes(h);
+  });
+  if (active) return CFG.pollActiveSec;
+  const dead = traders.every((t) => {
+    const hrs = t.deadHoursUtc || CFG.deadHoursUtc;
+    return hrs && hrs.includes(h);
+  });
+  return dead ? CFG.pollDeadSec : CFG.pollIdleSec;
 }
 
 // --- notifications ------------------------------------------------------
@@ -429,6 +440,32 @@ async function check(rootState, trader) {
       b: lines.join('\n') + `\n\n他平均獲利只有 $4.73/盎司 — 滑價 $1 就吃掉 20%。` });
   }
 
+  // 2b. Stacked exposure. The "Max lot size per copy trade" cap stops HIS
+  //     withdrawals from inflating any single order, but it does nothing about
+  //     him running several at once — and concurrency is where the leverage
+  //     actually comes from. TraderEthan has held five at a time, which at this
+  //     sizing is 108x and a liquidation only $40 of gold away.
+  if (MY_EQUITY > 0 && gold != null && open.length) {
+    const cap = +trader.maxLotPerTrade || Infinity;
+    const ratio0 = MY_EQUITY / eq;
+    const myLots = open.reduce((sum, p) =>
+      sum + Math.min(Math.floor(p.lots * ratio0 * 100) / 100, cap), 0);
+    const notional = myLots * OZ_PER_LOT * gold;
+    const lev = notional / MY_EQUITY;
+    const levCrit = trader.levCrit ?? 80;
+    const levWarn = trader.levWarn ?? 55;
+    if (lev >= levWarn) {
+      const liqMove = MY_EQUITY / (myLots * OZ_PER_LOT);
+      alerts.push({ key: `expo-${Math.round(lev / 10)}`, p: 'urgent', crit: lev >= levCrit,
+        tags: 'warning',
+        t: `${lev >= levCrit ? '🚨' : '⚠️'} 曝險 ${n(lev, 0)}x`,
+        b: `他同時開 ${open.length} 單 → 你 ${n(myLots)} 手 = $${n(notional, 0)} 名目\n` +
+           `你的權益 $${n(MY_EQUITY)}\n\n` +
+           `金價再逆走 $${n(liqMove, 0)} 就會清算。\n` +
+           `每單停損 $${trader.stopPerOrder || '?'} 會在 $${n((trader.stopPerOrder || 0) / (Math.min(Math.floor(0.02 * ratio0 * 100) / 100, cap) * OZ_PER_LOT), 0)} 先觸發。` });
+    }
+  }
+
   // 3. averaging-down ladder — where his losses concentrate.
   for (const side of ['long', 'short']) {
     const leg = open.filter((p) => p.side === side);
@@ -600,7 +637,7 @@ async function check(rootState, trader) {
 
     // Tightest cadence any trader calls for: if one is in a position, poll fast.
     const anyOpen = results.some((r) => r.open.length > 0);
-    const wait = cadenceSec(anyOpen) * 1000;
+    const wait = cadenceSec(anyOpen, TRADERS) * 1000;
     if (Date.now() + wait > deadline) break;
     await sleep(wait);
   } while (Date.now() < deadline);
