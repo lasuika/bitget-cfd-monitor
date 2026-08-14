@@ -479,6 +479,35 @@ async function check(rootState, trader) {
   state.wasQuiet = quietH >= CFG.quietHours;
   if (state.wasQuiet) state.quietPeakH = Math.max(state.quietPeakH || 0, quietH);
 
+  // 6. His equity is the DENOMINATOR of your lot size, and he controls it.
+  //    Both traders sweep profits out constantly — ManuGoldPrime has moved
+  //    $178,883 out since April against $1,684 in, on an account that holds
+  //    under $2,000. Every sweep shrinks the denominator, which silently
+  //    multiplies your position on his next trade. He is also paid 20% of what
+  //    his copiers make, so bigger copier positions are directly in his
+  //    interest. This is the one input to your risk that you neither set nor
+  //    are told about.
+  if (state.lastEquity && eq > 0) {
+    const before = Math.floor((MY_EQUITY || 0) / state.lastEquity);
+    const after = Math.floor((MY_EQUITY || 0) / eq);
+    const moved = Math.abs(eq - state.lastEquity) / state.lastEquity;
+    if (MY_EQUITY > 0 && after !== before) {
+      alerts.push({ key: `lotstep-${after}`, p: 'urgent', crit: after > before,
+        tags: 'chart_with_upwards_trend',
+        t: `${after > before ? '🚨 你的部位變大了' : '🔻 你的部位變小了'}`,
+        b: `他的權益 $${n(state.lastEquity)} → $${n(eq)}\n` +
+           `你的手數 ${n(before / 100)} → ${n(after / 100)}` +
+           (after > before ? `(放大 ${n(after / Math.max(before, 1), 1)} 倍)` : '') + `\n\n` +
+           (after > before
+             ? '你什麼都沒做,曝險就增加了 — 他把錢轉出去,分母變小。\n要維持原本的部位,得往你的跟單帳戶加錢。'
+             : '他的權益變大了,你的部位被稀釋。') });
+    } else if (moved > 0.25) {
+      alerts.push({ key: `eq-move-${Math.round(eq / 100)}`, p: 'default', tags: 'information_source',
+        t: '他的權益大幅變動',
+        b: `$${n(state.lastEquity)} → $${n(eq)} (${eq > state.lastEquity ? '+' : ''}${n((eq / state.lastEquity - 1) * 100, 1)}%)\n` +
+           `尚未跨過手數階梯,但接近了。` });
+    }
+  }
   state.lastEquity = eq;
   return { alerts, eq, open, gold, quietH, name: trader.name, id, daysLeft: state.daysLeft,
     ratio: MY_EQUITY > 0 ? (state.myEqEstimate || MY_EQUITY) / eq : null,
