@@ -842,6 +842,27 @@ async function check(rootState, trader) {
       if (TRADERS.length > 1) await sleep(1500);
     }
 
+    // Friday pre-close check, once a week while copying. Gold shuts 21:00 UTC
+    // and copying cannot be stopped during the closure; we are blind to open
+    // positions but the user's own app is not. Measured weekend drift: median
+    // $10.3/oz, max $26.3/oz over ten weekends — and stops do not protect
+    // against gaps (they fill at the reopen price).
+    const nw = new Date();
+    if (nw.getUTCDay() === 5 && nw.getUTCHours() >= 19 && nw.getUTCHours() < 21 && copiedTraders.length) {
+      const wk = nw.toISOString().slice(0, 10);
+      if (state.friNag !== wk) {
+        state.friNag = wk;
+        await notify('🕘 週五休市前檢查(21:00 UTC)',
+          `黃金兩小時內休市,休市後整個週末無法停止跟單。\n` +
+          `開 App 看一眼跟單帳戶:\n` +
+          `• 空倉 → 忽略這則,安心過週末\n` +
+          `• 有持倉 → 想想要不要在休市前手動停止跟單:\n` +
+          `  週末跳空中位 ±$103、實測最大 $263(你的 0.10 手尺度),\n` +
+          `  疊滿 5 單最壞約 $1,314 — 停損擋不住跳空(以開盤價成交)。`,
+          'high', 'calendar');
+      }
+    }
+
     if (results.length) {
       // The heartbeat asserts "monitoring works", not "the process is alive" —
       // if every history fetch failed, the dead man's switch SHOULD fire.
