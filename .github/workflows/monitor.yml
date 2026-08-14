@@ -43,7 +43,7 @@ concurrency:
   # overnight. Schedule events leave the inputs context empty, so the group
   # expression safely resolves to 'cfd-monitor' there.
   group: >-
-    ${{ (inputs.test == true || inputs.test_critical == true || inputs.test_healthcheck == true)
+    ${{ (inputs.test == true || inputs.test_critical == true || inputs.test_vibrate == true || inputs.test_healthcheck == true)
         && format('oneoff-{0}', github.run_id) || 'cfd-monitor' }}
   cancel-in-progress: false
 
