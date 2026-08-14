@@ -342,9 +342,24 @@ async function check(rootState, trader) {
            `現在完全沒有在跟單。\n\n` +
            `補 $${n(topUpTo(1.05 / (100 * baseLot)))} → 恢復最小跟單` });
     } else if (pinned) {
-      // Pinned at your own Max-lot cap: ratio drift cannot change your size, so
-      // there is no cliff to count down to, and the capital above the cap is
-      // the deliberate safety buffer — not idleness worth nagging about.
+      // Pinned at the cap. Below one full step of headroom that is the
+      // deliberate safety buffer; at a full step and beyond, profits have
+      // outgrown the cap and stopped compounding — which is exactly when the
+      // user asked to be told. Two health gates guard the advice: never
+      // suggest raising leverage within three days of a real loss, nor while
+      // the rolling win rate is in drift. Silence is the right answer there.
+      const stepsOver = rawSteps - Math.round(lotCap * 100);
+      const recentLoss = state.lastRealLossAt && now - state.lastRealLossAt < 3 * 864e5;
+      if (stepsOver >= 1 && !state.wrLow && !recentLoss) {
+        const newCap = rawSteps / 100;
+        alerts.push({ key: `capraise-${rawSteps}`, p: 'default', tags: 'chart_with_upwards_trend',
+          t: `📈 獲利已長到可調高 Max lot`,
+          b: `推估權益 $${n(myEqNow)} → 自然手數 ${n(newCap)},上限還釘在 ${n(lotCap)}。\n` +
+             `App 把 Max lot 調到 ${n(newCap)} 可讓獲利投入運轉` +
+             `(約 +${n(stepsOver / (lotCap * 100) * 100, 0)}% 月獲利)。\n` +
+             `⚠️ 風險等比放大:壞堆疊尾部從約 -$${n(lotCap * 5 * 3000, 0)} 變 -$${n(newCap * 5 * 3000, 0)}。\n\n` +
+             `調整後回報:①App 新上限 ②實際權益,我同步 config 讓計算對齊。` });
+      }
     } else {
       let daysLeft = null;
       const oldest = state.eqHist[0];
@@ -430,6 +445,7 @@ async function check(rootState, trader) {
       const lossFloor = +trader.lossAlertUsd || 10;
       for (const t of chrono) {
         if (t.profit <= -lossFloor) {
+          state.lastRealLossAt = now;
           alerts.push({ key: `realloss-${t.id}`, p: 'high', tags: 'small_red_triangle_down',
             t: `🔻 出現真實虧損 -$${n(Math.abs(t.profit))}`,
             b: `${t.side === 'long' ? '多' : '空'} ${n(t.lots)} 手 ${n(t.openPrice)}→${n(t.closePrice)}\n` +
@@ -448,7 +464,8 @@ async function check(rootState, trader) {
           state.wrLow = true;
           alerts.push({ key: 'winrate-drift', p: 'high', tags: 'chart_with_downwards_trend',
             t: `📉 近 20 筆勝率掉到 ${n(wr * 100, 0)}%`,
-            b: `他的歷史勝率 95%。連續劣化代表策略碰到了沒見過的行情。\n考慮減碼或暫停跟單。` });
+            b: `他的歷史勝率 95%。連續劣化代表策略碰到了沒見過的行情。\n` +
+               `防禦選項:App 把 Max lot 砍半(風險即時減半,可逆),或暫停跟單。` });
         } else if (wr >= 0.75) state.wrLow = false;
       }
 
