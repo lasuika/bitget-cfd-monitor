@@ -614,7 +614,7 @@ async function check(rootState, trader) {
       t: `${bad ? '🚨' : '🔻'} 加碼攤平中(${side === 'long' ? '多' : '空'} ${leg.length} 單)`,
       b: `入場 ${n(px[0])} ~ ${n(px[px.length - 1])} (跨距 $${n(spread)})\n` +
          `總量 ${n(lots)} 手 = ${n(lots * OZ_PER_LOT, 0)} 盎司\n` +
-         `逆勢 $${n(adverse)}` + (float != null ? ` | 估計浮動 ${float >= 0 ? '+' : ''}$${n(float)}` : '') +
+         `逆勢 $${n(adverse)}` + (floatUser != null ? ` | 估計浮動你約 ${floatUser >= 0 ? '+' : ''}$${n(floatUser)}` : '') +
          `\n\n他的加碼梯歷史上平均虧 $110,最深一次抱了 41 小時。` });
   }
 
