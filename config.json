@@ -117,6 +117,7 @@
  "_measured": "時段來自 ManuGoldPrime 972 筆開單:活躍時段涵蓋 87%,deadHours 各佔 <1%(21:00 為 0),週六 0 筆",
  "burstMinutes": 30,
  "sleepHoursUtc": [
+  15,
   16,
   17,
   18,
@@ -124,7 +125,9 @@
   20,
   21,
   22,
-  23
+  23,
+  0,
+  1
  ],
- "_sleep": "台北 00:00-08:00 = UTC 16-23。critical 在此時段用 emergency(大聲+重複到確認),清醒時段用 default(你的 App 設定=震動)。"
+ "_sleep": "台北 23:00-10:00 = UTC 15:00-02:00。critical 全天候 emergency(重複到確認);此時段用你的大聲鈴,清醒時段強制 vibrate 音效。"
 }

@@ -149,12 +149,12 @@ function ntfy(title, body, priority = 'default', tags = '') {
 
 // priority 2 = emergency: repeats every `retry` seconds until acknowledged, or
 // until `expire` elapses. Anything less can be slept through.
-// Priority is time-aware, matching the user's client config (default sound =
-// vibrate, high-priority sound = loud): during sleeping hours a critical goes
-// out as emergency — loud, repeating until acknowledged — because waking them
-// is the whole point; during waking hours the same critical rides the default
-// priority, which their phone renders as vibrate. No `sound` override is sent
-// either way, so the app-side sound choices stay in charge.
+// Every critical is emergency priority — repeating until acknowledged — at
+// all hours; what varies with the clock is only the NOISE. Sleeping hours omit
+// the sound parameter so the client's high-priority loud alarm applies (waking
+// the user is the point); waking hours override with Pushover's official
+// 'vibrate' sound, so the repeat-until-ack machinery runs silently in the
+// pocket. Missing an ack just means another buzz a minute later.
 function sleepingNow() {
   const h = new Date().getUTCHours();
   const hrs = CFG.sleepHoursUtc || [];
@@ -165,10 +165,11 @@ function pushover(title, body, { critical = false, url = null, wake = null } = {
   const loud = critical && (wake != null ? wake : sleepingNow());
   const form = new URLSearchParams({
     token: PO_TOKEN, user: PO_USER, title, message: body,
-    priority: loud ? '2' : '0',
-    ...(loud ? {
+    priority: critical ? '2' : '0',
+    ...(critical ? {
       retry: String(CFG.pushoverRetrySec ?? 60),
       expire: String(CFG.pushoverExpireSec ?? 1800),
+      ...(loud ? {} : { sound: 'vibrate' }),
     } : {}),
     ...(url ? { url, url_title: '開啟他的交易頁' } : {}),
   }).toString();
