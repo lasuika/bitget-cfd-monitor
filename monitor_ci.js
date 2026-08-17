@@ -845,8 +845,11 @@ async function check(rootState, trader) {
     }
   }
   if (!inferOpen) state.floatHalf = false;
-  // First-ever baseline: if we have never seen a close, seed from current equity.
-  if (state.flatEq == null && eq > 0) state.flatEq = eq;
+  // First-ever baseline. Seeding from CURRENT equity would be wrong if he is
+  // mid-position right now (equity already carries the float, and the drift
+  // would read as zero). Prefer the config seed the operator set from a known
+  // flat reading; fall back to current equity only when none is given.
+  if (state.flatEq == null && eq > 0) state.flatEq = +trader.flatEqSeed || eq;
 
   const burst = (state.burstUntil || 0) > now || inferOpen;
   return { alerts, eq, open, gold, quietH, burst, histOk, copied: MY_EQUITY > 0,

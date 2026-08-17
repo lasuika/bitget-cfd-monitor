@@ -73,7 +73,9 @@
    "ddAlertHisUsd": 40,
    "capPolicy": "fixed",
    "capReviewAtTrades": 100,
-   "_capPolicy": "2026-08-17 用戶決定:固定派。Max lot 釘在 0.10,獲利不滾入,到 100 筆再重新評估。📈 調高建議在此之前靜音。"
+   "_capPolicy": "2026-08-17 用戶決定:固定派。Max lot 釘在 0.10,獲利不滾入,到 100 筆再重新評估。📈 調高建議在此之前靜音。",
+   "flatEqSeed": 400.0,
+   "_flatEqSeed": "2026-08-17 15:54 平倉後他的權益 = $400.00(空倉基準)。首次啟動用它,之後每次平倉自動更新。"
   }
  ],
  "cliffWarnDays": 14,
