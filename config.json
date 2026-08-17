@@ -86,7 +86,6 @@
    "variableLots": true,
    "lossAlertUsd": 10,
    "ddAlertHisUsd": 150,
-   "maxLotPerTrade": 0.1,
    "stopPerOrder": 300,
    "levWarn": 55,
    "levCrit": 80,
