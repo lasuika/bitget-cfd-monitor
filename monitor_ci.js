@@ -270,8 +270,12 @@ async function newerCommitExists() {
     r.id > runId && r.head_sha !== sha && r.status !== 'completed');
   for (const r of cands) {
     const jobs = await ghJson(`/repos/${repo}/actions/runs/${r.id}/jobs?per_page=10`, tok);
-    const monitorJob = ((jobs && jobs.jobs) || []).some((j) => /^monitor/.test(j.name) && j.conclusion !== 'skipped');
-    if (monitorJob) return true;
+    const list = (jobs && jobs.jobs) || [];
+    // A run parked on our concurrency group has NO jobs yet — that is exactly
+    // the newer monitor run waiting for this slot (test dispatches use their
+    // own group and never park). Once jobs exist, require a live monitor job.
+    if (!list.length) return true;
+    if (list.some((j) => /^monitor/.test(j.name) && j.conclusion !== 'skipped')) return true;
   }
   return false;
 }
