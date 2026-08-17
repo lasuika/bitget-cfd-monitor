@@ -349,6 +349,17 @@ async function check(rootState, trader) {
   const lastOrder = +perf.lastOrderTime;
   let pendingCapraise = null;
 
+  // The open view is blind, but his EQUITY is not: it carries unrealized PnL.
+  // After each close we record equity as the flat baseline; any drift from it
+  // means positions are running. That inference is the only live signal we
+  // have while he holds — it drives the tight cadence and a floating-loss
+  // alert. Learned the hard way: he sat in two shorts for hours while the
+  // monitor idled at 5-minute polls because "no new close" read as "quiet".
+  const flatEq = state.flatEq;
+  const eqDrift = flatEq != null && eq > 0 ? eq - flatEq : null;
+  const inferOpen = eqDrift != null && Math.abs(eqDrift) >= (CFG.openInferUsd ?? 2);
+  state.inferOpen = inferOpen;
+
   // 1. equity cliffs. 95% of his trades are 0.01 lots — the MT5 minimum — and
   //    copier lots round DOWN, so your size for one of his 0.01-lot entries is
   //    floor(ratio)/100. That makes EVERY integer ratio a cliff, not just 1.0:
@@ -487,6 +498,10 @@ async function check(rootState, trader) {
         // He works in bursts. A close means he is at the desk — poll tightly
         // for the next while so the rest of the burst is caught near-realtime.
         state.burstUntil = now + (CFG.burstMinutes ?? 30) * 60000;
+        // He just closed something; equity is at (or near) realized again.
+        // Re-baseline so subsequent drift reads as new open exposure.
+        state.flatEq = eq;
+        state.floatWarned = false;
         const myEqRef = state.myEqEstimate || MY_EQUITY || 0;
         // `realised` is in HIS dollars; the 6% line is in YOURS. Convert first —
         // the raw comparison left this trigger 5x too loose at current sizing.
@@ -807,7 +822,33 @@ async function check(rootState, trader) {
     }
   }
 
-  const burst = (state.burstUntil || 0) > now;
+  // Floating-loss alert via equity drift. His drawdown x copyMult ≈ yours.
+  if (MY_EQUITY > 0 && inferOpen && eqDrift < 0) {
+    const mult = (state.curMyLot || 0) / baseLot;
+    const mine = eqDrift * mult;
+    const myEqRef = state.myEqEstimate || MY_EQUITY;
+    const pct = -mine / myEqRef;
+    if (pct >= CFG.emergencyFloatPct && !state.floatWarned) {
+      state.floatWarned = true;
+      alerts.push({ key: 'float-drift', p: 'urgent', crit: true, cool: 30, tags: 'rotating_light',
+        t: `🚨 他持倉中浮虧 $${n(-eqDrift)} → 你約 -$${n(-mine)}`,
+        b: `他的權益從平倉基準 $${n(flatEq)} 掉到 $${n(eq)}。\n` +
+           `以你的手數推估浮虧 -$${n(-mine)}(權益 ${n(pct * 100, 0)}%)。\n` +
+           `你的每單停損 $${trader.stopPerOrder || '?'} 在交易所端等著;` +
+           `要提前出場只能 App → 停止跟單。\n\n` +
+           `(監控看不到持倉,這是從他的權益反推的。開 App 看真實數字。)` });
+    } else if (pct >= CFG.emergencyFloatPct * 0.5 && !state.floatWarned && !state.floatHalf) {
+      state.floatHalf = true;
+      alerts.push({ key: 'float-half', p: 'high', cool: 60, tags: 'warning',
+        t: `⚠️ 他持倉中浮虧 $${n(-eqDrift)} → 你約 -$${n(-mine)}`,
+        b: `權益從基準 $${n(flatEq)} → $${n(eq)}。還沒到緊急線,但方向不對。` });
+    }
+  }
+  if (!inferOpen) state.floatHalf = false;
+  // First-ever baseline: if we have never seen a close, seed from current equity.
+  if (state.flatEq == null && eq > 0) state.flatEq = eq;
+
+  const burst = (state.burstUntil || 0) > now || inferOpen;
   return { alerts, eq, open, gold, quietH, burst, histOk, copied: MY_EQUITY > 0,
     name: trader.name, id, daysLeft: state.daysLeft,
     ratio: MY_EQUITY > 0 ? (state.myEqEstimate || MY_EQUITY) / eq : null,

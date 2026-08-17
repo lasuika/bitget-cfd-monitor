@@ -135,5 +135,6 @@
  "_sleep": "台北 23:00-10:00 = UTC 15:00-02:00。critical 全天候 emergency(重複到確認);此時段用你的大聲鈴,清醒時段強制 vibrate 音效。",
  "pushoverRetryVibrateSec": 30,
  "daySound": "pushover",
- "_daySound": "清醒時段緊急警報的音效(Pushover 官方音名)。emergency 訊息不吃 App 端 default,必須由 API 指定。"
+ "_daySound": "清醒時段緊急警報的音效(Pushover 官方音名)。emergency 訊息不吃 App 端 default,必須由 API 指定。",
+ "openInferUsd": 2
 }
