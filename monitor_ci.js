@@ -558,6 +558,12 @@ async function check(rootState, trader) {
   const known = state.knownClosed || {};
   // One conversion, one home: HIS dollars x copyMult = YOUR dollars.
   const copyMult = (state.curMyLot || 0) / baseLot;
+  // Per-trade multiplier for traders whose lot varies (ladder/grid styles):
+  // your copy of a given order is floor(hisLots x ratio x 100)/100, capped.
+  // For a fixed-lot trader this equals copyMult at his base lot.
+  const ratioNow = MY_EQUITY > 0 && eq > 0 ? (state.myEqEstimate || MY_EQUITY) / eq : 0;
+  const myLotFor = (lots) => (ratioNow > 0 && lots > 0) ? Math.min(Math.floor(lots * ratioNow * 100) / 100, lotCap) : 0;
+  const multFor = (lots) => (lots > 0 ? myLotFor(lots) / lots : 0);
   if (closed.length) {
     const fresh = closed.filter((t) => t.closeTime && !known[t.id]);
     for (const t of fresh) known[t.id] = t.closeTime;
@@ -622,7 +628,7 @@ async function check(rootState, trader) {
         }
         // `realised` is in HIS dollars; the 6% line is in YOURS. Convert first —
         // the raw comparison left this trigger 5x too loose at current sizing.
-        const realisedUser = realised * copyMult;
+        const realisedUser = fresh.reduce((s, t) => s + t.profit * multFor(t.lots), 0);
         const bad = myEqRef > 0 && copyMult > 0 && realisedUser < -myEqRef * CFG.emergencyFloatPct;
         alerts.push({ key: `closed-${fresh.map((t) => t.id).join(',')}`,
           p: bad ? 'urgent' : 'default', crit: bad, tags: bad ? 'rotating_light' : 'receipt',
@@ -652,6 +658,7 @@ async function check(rootState, trader) {
 
       // (a) his per-order size changed — your copy scales with it 1:1
       for (const t of chrono) {
+        if (trader.variableLots) break;   // ladder/grid styles change size every order by design
         if (Math.abs(t.lots - baseLot) > 1e-9) {
           alerts.push({ key: `sizechange-${Math.round(t.lots * 100)}`, p: 'high', tags: 'triangular_ruler',
             t: `📐 他的單筆手數變了:${n(t.lots)}(原 ${n(baseLot)})`,
@@ -669,7 +676,7 @@ async function check(rootState, trader) {
           alerts.push({ key: `realloss-${t.id}`, p: 'high', tags: 'small_red_triangle_down',
             t: `🔻 出現真實虧損 -$${n(Math.abs(t.profit))}`,
             b: `${t.side === 'long' ? '多' : '空'} ${n(t.lots)} 手 ${n(t.openPrice)}→${n(t.closePrice)}\n` +
-               `你的等比虧損約 -$${n(Math.abs(t.profit) * copyMult)}。\n` +
+               `你的等比虧損約 -${n(Math.abs(t.profit) * multFor(t.lots))}。\n` +
                `這是模式改變的第一個訊號 — 留意接下來幾筆。` });
         }
       }
@@ -749,9 +756,9 @@ async function check(rootState, trader) {
 
       // (f) the projection's inputs: fees at the measured $6/lot round-trip,
       //     and trade PnL at the lot multiple in force, 20% share off wins.
-      state.feeSinceAnchor = (state.feeSinceAnchor || 0) + fresh.length * (state.curMyLot || 0) * 6;
+      state.feeSinceAnchor = (state.feeSinceAnchor || 0) + chrono.reduce((a, t) => a + myLotFor(t.lots) * 6, 0);
       state.pnlSinceAnchor = (state.pnlSinceAnchor || 0) + chrono.reduce((a, t) =>
-        a + (t.profit > 0 ? t.profit * copyMult * 0.8 : t.profit * copyMult), 0);
+        a + (t.profit > 0 ? t.profit * multFor(t.lots) * 0.8 : t.profit * multFor(t.lots)), 0);
     }
     state.histSeeded = true;
   }
@@ -925,6 +932,8 @@ async function check(rootState, trader) {
   // Sample maturity: 44 trades was a snapshot, not a record. Nudge a re-run of
   // the full analysis as the sample grows instead of trusting day-7 statistics.
   const tot = +perf.totalTrades || 0;
+  // A trader added mid-record must not fire every milestone he already passed.
+  if (tot && state.milestone == null) state.milestone = [100, 150, 200, 300].filter((m) => tot >= m).pop() || 0;
   if (tot && MY_EQUITY > 0) {
     for (const m of [100, 150, 200, 300]) {
       if (tot >= m && (state.milestone || 0) < m) {

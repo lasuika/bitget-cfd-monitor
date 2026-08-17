@@ -132,6 +132,8 @@ jobs:
           # it — not trader 1, which is watch-only.
           MY_EQUITY_2: ${{ inputs.my_equity != '' && inputs.my_equity || vars.MY_EQUITY_2 }}
           MY_EQUITY_AT_2: ${{ vars.MY_EQUITY_AT_2 }}
+          MY_EQUITY_3: ${{ vars.MY_EQUITY_3 }}
+          MY_EQUITY_AT_3: ${{ vars.MY_EQUITY_AT_3 }}
           # 320, not 330: the deadline is only checked between passes, and a
           # fully degraded pass (retry storms x2 traders) can run 20+ minutes —
           # 330 could overshoot the 350-minute job timeout and lose the final

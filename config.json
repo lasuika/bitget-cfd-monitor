@@ -76,6 +76,42 @@
    "_capPolicy": "2026-08-17 用戶決定:固定派。Max lot 釘在 0.10,獲利不滾入,到 100 筆再重新評估。📈 調高建議在此之前靜音。",
    "flatEqSeed": 400,
    "_flatEqSeed": "2026-08-17 15:54 平倉後他的權益 = $400.00(空倉基準)。首次啟動用它,之後每次平倉自動更新。"
+  },
+  {
+   "name": "星火-起航万倍",
+   "portfolioId": "1471086769152733184",
+   "myEquity": 0,
+   "myEquityAt": "2026-08-18",
+   "baseLot": 0.15,
+   "variableLots": true,
+   "lossAlertUsd": 10,
+   "ddAlertHisUsd": 150,
+   "maxLotPerTrade": 0.1,
+   "stopPerOrder": 300,
+   "levWarn": 55,
+   "levCrit": 80,
+   "activeHoursUtc": [
+    1,
+    2,
+    3,
+    8,
+    9,
+    12,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    22
+   ],
+   "deadHoursUtc": [
+    20,
+    21
+   ],
+   "capPolicy": "fixed",
+   "capReviewAtTrades": 300,
+   "_note": "6 天歷史、30 單併發、0.01–0.15 手加碼梯、最深浮虧 -$808(權益 60%)、單部位最深 -$41/oz。baseLot=最常用 0.15(61/112 筆)。myEquity 由 MY_EQUITY_3 覆寫。"
   }
  ],
  "cliffWarnDays": 14,
