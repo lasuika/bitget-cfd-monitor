@@ -376,7 +376,38 @@ async function check(rootState, trader) {
   const baseLot = +trader.baseLot || 0.01;
   const lotCap = +trader.maxLotPerTrade || Infinity;
 
-  const perf = await cfd.performance(id);
+  // The performance endpoint is served by replicas with different staleness:
+  // one returned $1,351.01 for six minutes straight while another said
+  // $1,520.91 for the same trader (and $345.68 vs $259.52 for Ethan). One read
+  // per pass therefore sees whichever replica answers, and a stale one hides a
+  // running position from the drift inference. For copied traders, read
+  // three times and keep the reading farthest from the flat baseline — the
+  // fresh replica is the one that moved; a stale one can only sit at an old
+  // value. Trade count takes the max (it never goes down).
+  let perf = await cfd.performance(id);
+  if (MY_EQUITY > 0) {
+    const reads = [perf];
+    for (let i = 0; i < 2; i++) { await sleep(400); reads.push(await cfd.performance(id).catch(() => null)); }
+    const ok = reads.filter((r) => r && Number.isFinite(+r.totalEquity));
+    const eqs = [...new Set(ok.map((r) => +r.totalEquity))];
+    // Remember when each distinct value was first seen: a value first seen
+    // 10+ minutes ago that still shows up next to a newer one is the stale
+    // replica, and must not win just because it is far from the baseline
+    // (after a close re-baselines, the old value IS the far one).
+    const seen = (state.eqSeen = state.eqSeen || {});
+    for (const v of eqs) if (seen[v] == null) seen[v] = now;
+    for (const k of Object.keys(seen)) if (now - seen[k] > 6 * 3600e3) delete seen[k];
+    if (eqs.length > 1) {
+      const newest = Math.max(...eqs.map((v) => seen[v]));
+      const live = ok.filter((r) => newest - seen[+r.totalEquity] < 10 * 60000);
+      const pool = live.length ? live : ok;
+      const ref = state.flatEq != null ? state.flatEq : +pool[0].totalEquity;
+      perf = pool.reduce((best, r) => Math.abs(+r.totalEquity - ref) > Math.abs(+best.totalEquity - ref) ? r : best, pool[0]);
+      log({ trader: trader.name, replicaSpread: eqs.map((v) => +v.toFixed(2)), picked: +(+perf.totalEquity).toFixed(2) });
+    }
+    perf.totalTrades = String(Math.max(...ok.map((r) => +r.totalTrades || 0)));
+    perf.lastOrderTime = String(Math.max(...ok.map((r) => +r.lastOrderTime || 0)));
+  }
 
   // The open view is blind for anonymous callers (proven: five polls inside a
   // 26.8-minute hold, all zero rows). Probing it every pass spent a third of
