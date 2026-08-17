@@ -784,7 +784,7 @@ async function check(rootState, trader) {
       //     and trade PnL at the lot multiple in force, 20% share off wins.
       state.feeSinceAnchor = (state.feeSinceAnchor || 0) + chrono.reduce((a, t) => a + myLotFor(t.lots) * 6, 0);
       state.pnlSinceAnchor = (state.pnlSinceAnchor || 0) + chrono.reduce((a, t) =>
-        a + (t.profit > 0 ? t.profit * multFor(t.lots) * 0.8 : t.profit * multFor(t.lots)), 0);
+        a + (t.profit > 0 ? t.profit * multFor(t.lots) * (1 - (+trader.profitShare || 0.2)) : t.profit * multFor(t.lots)), 0);
     }
     state.histSeeded = true;
   }
