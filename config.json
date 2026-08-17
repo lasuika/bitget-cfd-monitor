@@ -179,5 +179,39 @@
  "basisWarnUsd": 4,
  "ecoWarnMin": 30,
  "ecoHotMinBefore": 5,
- "ecoHotMinAfter": 15
+ "ecoHotMinAfter": 15,
+ "peers": [
+  {
+   "name": "ManuGoldPrime",
+   "portfolioId": "1423679390962597888"
+  },
+  {
+   "name": "百倍计划稳健",
+   "portfolioId": "1448402338407530496"
+  },
+  {
+   "name": "InsaneShark",
+   "portfolioId": "1469037429152202752"
+  },
+  {
+   "name": "XAUUSD25-50",
+   "portfolioId": "1460833892966621184"
+  },
+  {
+   "name": "零号交易员",
+   "portfolioId": "1460931727875661824"
+  },
+  {
+   "name": "BG最稳带单员",
+   "portfolioId": "1468738181542195200"
+  },
+  {
+   "name": "星火-起航万倍",
+   "portfolioId": "1471086769152733184"
+  }
+ ],
+ "peerPollMin": 10,
+ "peerWindowMin": 90,
+ "peerMinCloses": 5,
+ "peerMinHoldMin": 30
 }

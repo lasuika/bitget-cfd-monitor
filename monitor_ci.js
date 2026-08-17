@@ -412,7 +412,9 @@ async function check(rootState, trader) {
   }
   // Gold only matters to consumers gated on open rows; while the view is blind
   // both fetches per pass were pure waste against the ticker host.
-  const gold = open.length ? await goldNow().catch(() => null) : null;
+  // Also fetched while he is inferred holding: the direction inference below
+  // needs a price to pair with each equity reading.
+  const gold = (open.length || state.inferOpen) ? await goldNow().catch(() => null) : null;
 
   // Canary: if the open view ever starts returning rows — a Bitget change, or
   // an authenticated future — the unrealised-risk alerts come back to life,
@@ -439,7 +441,27 @@ async function check(rootState, trader) {
   const flatEq = state.flatEq;
   const eqDrift = flatEq != null && eq > 0 ? eq - flatEq : null;
   const inferOpen = eqDrift != null && Math.abs(eqDrift) >= (CFG.openInferUsd ?? 2);
+  if (inferOpen && !state.inferOpen) state.inferOpenSince = now;
+  if (!inferOpen) { state.inferOpenSince = null; state.dirInfer = null; }
   state.inferOpen = inferOpen;
+  // Direction while holding, two weak signals combined:
+  //  (1) side of his most recent close (measured 68% for Ethan, 60–91% across
+  //      peers — traders mostly re-enter the same way);
+  //  (2) sign of Δequity vs Δgold between two readings where BOTH moved: his
+  //      equity feed updates in lumps (25 minutes flat, then a jump), so this
+  //      is only trusted on a ≥$2 move in each. It overrides (1) when present.
+  if (inferOpen && gold != null && eq > 0) {
+    if (state.dirRefEq != null && state.dirRefGold != null &&
+        Math.abs(eq - state.dirRefEq) >= 2 && Math.abs(gold - state.dirRefGold) >= 2) {
+      const same = Math.sign(eq - state.dirRefEq) === Math.sign(gold - state.dirRefGold);
+      state.dirInfer = { side: same ? 'long' : 'short', how: 'drift', at: now };
+    }
+    if (state.dirRefEq == null || Math.abs(eq - state.dirRefEq) >= 2) { state.dirRefEq = eq; state.dirRefGold = gold; }
+    if (!state.dirInfer && closed.length) {
+      const last = [...closed].filter((t) => t.closeTime).sort((a, b) => b.closeTime - a.closeTime)[0];
+      if (last && now - last.closeTime < 6 * 3600e3) state.dirInfer = { side: last.side, how: 'lastclose', at: now };
+    }
+  } else if (!inferOpen) { state.dirRefEq = null; state.dirRefGold = null; }
 
   // 1. equity cliffs. 95% of his trades are 0.01 lots — the MT5 minimum — and
   //    copier lots round DOWN, so your size for one of his 0.01-lot entries is
@@ -984,6 +1006,7 @@ async function check(rootState, trader) {
   const basisMed = bs.length ? bs.map((x) => Math.abs(x.close)).sort((a, b) => a - b)[bs.length >> 1] : null;
   return { alerts, eq, open, gold, quietH, burst, histOk, copied: MY_EQUITY > 0,
     inferOpen, basisMed, dayCloses: state.dayCloses || 0, dayPnlHis: state.dayPnlHis || 0,
+    inferOpenSince: state.inferOpenSince, dirInfer: state.dirInfer,
     dayKey: state.dayKey, copyMult, myEqRefOut: state.myEqEstimate || MY_EQUITY,
     name: trader.name, id, daysLeft: state.daysLeft,
     ratio: MY_EQUITY > 0 ? (state.myEqEstimate || MY_EQUITY) / eq : null,
@@ -1157,6 +1180,45 @@ async function check(rootState, trader) {
           await notify('📅 本週美國高影響數據(台北時間)',
             list.length ? list.join('\n') : '本週沒有高影響美元數據。', 'default', 'calendar');
         }
+      }
+    }
+
+    // Peer cross-check: while a copied trader is inferred holding, poll a panel
+    // of other gold leaders' recent closes (every 10 min; positions are hidden
+    // for them too). If most of them are closing one way and he is inferred
+    // the other way for 30+ minutes, that is the "everyone rides the trend,
+    // he fights it" shape — a red flag for a hold-until-it-comes-back loss,
+    // not a trading signal. Directions on both sides are inferences.
+    const holders = results.filter((r) => r.copied && r.inferOpen && r.inferOpenSince &&
+      Date.now() - r.inferOpenSince >= (CFG.peerMinHoldMin ?? 30) * 60000 && r.dirInfer);
+    if (holders.length && (CFG.peers || []).length && Date.now() - (state.peerAt || 0) >= (CFG.peerPollMin ?? 10) * 60000) {
+      state.peerAt = Date.now();
+      state.sent = state.sent || {};
+      const since = Date.now() - (CFG.peerWindowMin ?? 90) * 60000;
+      const votes = { long: 0, short: 0 }, who = [];
+      for (const p of CFG.peers) {
+        try {
+          await sleep(1200);
+          const rows = (await cfd.history(p.portfolioId, { maxPages: 1, pageSize: 20 })).map(norm)
+            .filter((t) => t.closeTime && t.closeTime >= since);
+          const L = rows.filter((t) => t.side === 'long').length, S = rows.length - L;
+          if (rows.length) { votes.long += L; votes.short += S; who.push(`${p.name} 多${L}/空${S}`); }
+        } catch (e) { log({ peer: p.name, peerError: e.message }); }
+      }
+      const tot = votes.long + votes.short;
+      const bias = tot >= (CFG.peerMinCloses ?? 5) ? (votes.long / tot >= 0.7 ? 'long' : votes.short / tot >= 0.7 ? 'short' : null) : null;
+      log({ peers: votes, bias, holders: holders.map((r) => `${r.name}:${r.dirInfer.side}/${r.dirInfer.how}`) });
+      state.peerBias = { bias, votes, who, at: Date.now() };
+      for (const r of holders) {
+        if (!bias || r.dirInfer.side === bias) continue;
+        const key = `${r.id}|peer-diverge`;
+        if (state.sent[key] && Date.now() - state.sent[key] < 120 * 60000) continue;
+        const ok = await notify(`⚠️ 他逆勢扛單:同儕 ${Math.round(100 * votes[bias] / tot)}% 在${bias === 'long' ? '做多' : '做空'},他推斷${r.dirInfer.side === 'long' ? '做多' : '做空'} · ${r.name}`,
+          `近 ${CFG.peerWindowMin ?? 90} 分鐘同儕平倉:多 ${votes.long} / 空 ${votes.short}\n${who.join('\n')}\n\n` +
+          `他已推斷持倉 ${Math.round((Date.now() - r.inferOpenSince) / 60000)} 分鐘,方向來自${r.dirInfer.how === 'drift' ? '權益 vs 金價反推' : '最近一筆平倉方向'}(不保證)。\n` +
+          `這是「大家順勢賺、他逆勢扛」的紅旗,不是進出訊號。開 App 確認他的實際方向與你的浮虧。`,
+          'high', 'warning', false, traderUrl(r.id));
+        if (ok) state.sent[key] = Date.now();
       }
     }
 
