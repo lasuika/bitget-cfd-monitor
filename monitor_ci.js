@@ -102,11 +102,25 @@ const DEAD_HOURS = new Set(CFG.deadHoursUtc);
 // times nobody trades. TraderEthan has never opened between 15:00 and 23:00 UTC;
 // ManuGoldPrime does most of his work there. Poll fast only when the trader in
 // question is actually likely to be at the desk.
+// Gold CFD session, derived from 972 timestamps across a peer's history rather
+// than assumed: zero open/close events in UTC hour 21 on ANY weekday, first
+// Sunday events at 22:02 UTC, last Friday close 20:28 UTC. So the session is
+// Sun 22:00 UTC → Fri 21:00 UTC with a daily 21:00–22:00 UTC break. Bitget's
+// own rule during the weekend closure: "You cannot stop copying" — whatever he
+// holds at 21:00 UTC Friday, you hold until Sunday 22:00 UTC, stops included.
+function marketState(now = new Date()) {
+  const dow = now.getUTCDay(), h = now.getUTCHours(), m = now.getUTCMinutes();
+  const day = now.toISOString().slice(0, 10);
+  if ((CFG.marketHolidays || []).includes(day)) return { open: false, why: 'holiday', toWeekClose: null };
+  if (dow === 6 || (dow === 0 && h < 22) || (dow === 5 && h >= 21)) return { open: false, why: 'weekend', toWeekClose: null };
+  if (h === 21) return { open: false, why: 'break', toWeekClose: null };
+  return { open: true, why: null, toWeekClose: dow === 5 ? 21 * 60 - (h * 60 + m) : null };
+}
+
 function cadenceSec(hasOpen, traders = TRADERS, now = new Date()) {
-  const dow = now.getUTCDay(), h = now.getUTCHours();
-  // Gold CFD closes for the weekend: Friday ~21:00 UTC to Sunday ~22:00 UTC.
-  if (dow === 6) return 1800;                        // Saturday: market shut
-  if (dow === 0 && h < 21) return 1800;              // Sunday before reopen
+  const h = now.getUTCHours();
+  const mk = marketState(now);
+  if (!mk.open) return mk.why === 'break' ? CFG.pollDeadSec : 1800; // nothing can move
   if (hasOpen) return CFG.pollOpenSec;               // someone is in a trade
   const active = traders.some((t) => {
     const hrs = t.activeHoursUtc || CFG.activeHoursUtc;
@@ -275,6 +289,54 @@ function pub(p) {
 }
 const goldNow = () => pub('/api/v2/mix/market/ticker?symbol=XAUUSDT&productType=USDT-FUTURES')
   .then((r) => { const t = (r.data || [])[0]; return t ? +t.lastPr : null; });
+
+function getJson(hostname, p) {
+  return new Promise((res, rej) => {
+    const r = https.request({ hostname, path: p, method: 'GET',
+      headers: { 'User-Agent': 'cfd-monitor/1.0', Accept: 'application/json' } }, (x) => {
+      let b = ''; x.on('data', (c) => (b += c));
+      x.on('end', () => { try { res(JSON.parse(b)); } catch { rej(new Error('bad json ' + x.statusCode)); } });
+    });
+    r.on('error', rej);
+    r.setTimeout(15000, () => r.destroy(new Error('timeout')));
+    r.end();
+  });
+}
+
+// Perp 1-minute candle containing timestamp ts (ms). His CFD fill minus this
+// close is the CFD-vs-perp basis: a rough, free proxy for the spread we cannot
+// see. Fill-minute noise is ±$1; a persistent |basis| of several dollars means
+// the CFD quote is wide or the feed drifted — either way the $30/oz stop is
+// closer than the maths assumed.
+async function perpCloseAt(ts) {
+  const r = await pub(`/api/v2/mix/market/candles?symbol=XAUUSDT&productType=USDT-FUTURES&granularity=1m&endTime=${ts + 60000}&limit=2`);
+  const rows = (r.data || []).filter((c) => +c[0] <= ts).sort((a, b) => +b[0] - +a[0]);
+  return rows.length ? +rows[0][4] : null;
+}
+
+// US high-impact events for the current week, from ForexFactory's public feed.
+// Gold's worst minutes cluster around these; his 30-minute-hold style has never
+// been tested through one with your money on. Cached an hour; a failed fetch
+// retries in five minutes.
+const ecoCache = { at: 0, events: [] };
+async function ecoEvents() {
+  if (Date.now() - ecoCache.at < 3600e3) return ecoCache.events;
+  try {
+    const j = await getJson('nfs.faireconomy.media', '/ff_calendar_thisweek.json');
+    ecoCache.events = (Array.isArray(j) ? j : [])
+      .filter((e) => e.country === 'USD' && e.impact === 'High')
+      .map((e) => ({ t: Date.parse(e.date), title: e.title }))
+      .filter((e) => Number.isFinite(e.t));
+    ecoCache.at = Date.now();
+  } catch (e) {
+    log({ ecoError: e.message });
+    // The feed rate-limits per IP; a 429 earns a 30-minute back-off, anything
+    // else retries in five.
+    ecoCache.at = Date.now() - (/429/.test(e.message) ? 1800e3 : 3300e3);
+  }
+  return ecoCache.events;
+}
+const taipei = (ms) => new Date(ms + 8 * 3600e3).toISOString().slice(11, 16);
 
 // --- one pass -----------------------------------------------------------
 async function check(rootState, trader) {
@@ -504,6 +566,41 @@ async function check(rootState, trader) {
         state.flatEq = eq;
         state.floatWarned = false;
         const myEqRef = state.myEqEstimate || MY_EQUITY || 0;
+
+        // Daily tally for the evening reconciliation nudge (UTC day key).
+        const dayKey = new Date(now).toISOString().slice(0, 10);
+        if (state.dayKey !== dayKey) { state.dayKey = dayKey; state.dayCloses = 0; state.dayPnlHis = 0; }
+        state.dayCloses += fresh.length;
+        state.dayPnlHis += realised;
+
+        // CFD-vs-perp basis at his fill minutes. Best effort, at most 3 per
+        // pass; a failure here must never block the close alert.
+        for (const t of fresh.slice(0, 3)) {
+          try {
+            await sleep(300);
+            const pc = await perpCloseAt(t.closeTime);
+            const po = await perpCloseAt(t.openTime);
+            if (pc != null && po != null) {
+              const b = (state.basis = state.basis || []);
+              b.push({ t: t.closeTime, open: +(t.openPrice - po).toFixed(2), close: +(t.closePrice - pc).toFixed(2) });
+              while (b.length > 60) b.shift();
+              // The perp carries a persistent premium over the CFD (measured on
+              // 20 of his fills: median -$4.4/oz, range -0.6..-8.7), so the raw
+              // basis is not the signal — its DEVIATION from the rolling median is.
+              const prior = b.slice(0, -1).slice(-20).map((x) => x.close).sort((p, q) => p - q);
+              const med = prior.length >= 5 ? prior[prior.length >> 1] : null;
+              const dev = med == null ? 0
+                : Math.max(Math.abs(t.openPrice - po - med), Math.abs(t.closePrice - pc - med));
+              if (dev >= (CFG.basisWarnUsd ?? 4)) {
+                alerts.push({ key: 'basis-wide', p: 'high', cool: 180, tags: 'straight_ruler',
+                  t: `📏 CFD 報價異常偏離 $${n(dev)}/oz`,
+                  b: `他這筆 ${n(t.openPrice)}→${n(t.closePrice)},同分鐘永續 ${n(po)}→${n(pc)};\n` +
+                     `平常 CFD 比永續低約 $${n(-med)},這筆偏離 $${n(dev)}。\n` +
+                     `點差放大或報價漂移;你的 $30/oz 停損實際距離可能比算的近。` });
+              }
+            }
+          } catch (e) { log({ trader: trader.name, basisError: e.message }); }
+        }
         // `realised` is in HIS dollars; the 6% line is in YOURS. Convert first —
         // the raw comparison left this trigger 5x too loose at current sizing.
         const realisedUser = realised * copyMult;
@@ -848,7 +945,11 @@ async function check(rootState, trader) {
   if (!inferOpen) state.floatHalf = false;
 
   const burst = (state.burstUntil || 0) > now || inferOpen;
+  const bs = (state.basis || []).slice(-20);
+  const basisMed = bs.length ? bs.map((x) => Math.abs(x.close)).sort((a, b) => a - b)[bs.length >> 1] : null;
   return { alerts, eq, open, gold, quietH, burst, histOk, copied: MY_EQUITY > 0,
+    inferOpen, basisMed, dayCloses: state.dayCloses || 0, dayPnlHis: state.dayPnlHis || 0,
+    dayKey: state.dayKey, copyMult, myEqRefOut: state.myEqEstimate || MY_EQUITY,
     name: trader.name, id, daysLeft: state.daysLeft,
     ratio: MY_EQUITY > 0 ? (state.myEqEstimate || MY_EQUITY) / eq : null,
     myEq: state.myEqEstimate || MY_EQUITY };
@@ -946,18 +1047,96 @@ async function check(rootState, trader) {
     // their 23:00 bedtime. The original 19-21 UTC window landed at 3am Taipei:
     // a non-waking reminder delivered while its audience slept, about a market
     // close happening before they woke.
+    const mk = marketState(nw);
+    const held = results.filter((r) => r.copied && r.inferOpen).map((r) => r.name);
+    const holdTxt = held.length ? `推斷持倉中(${held.join('、')})` : '推斷空手';
     if (nw.getUTCDay() === 5 && nw.getUTCHours() >= 12 && nw.getUTCHours() < 14 && copiedTraders.length) {
       const wk = nw.toISOString().slice(0, 10);
       if (state.friNag !== wk) {
         state.friNag = wk;
         await notify('🕘 週五晚間檢查:黃金明晨 05:00(台北)休市',
-          `休市後整個週末無法停止跟單。\n` +
+          `目前 ${holdTxt}。休市後整個週末無法停止跟單。\n` +
           `開 App 看一眼跟單帳戶:\n` +
           `• 空倉 → 忽略這則,安心過週末\n` +
           `• 有持倉 → 想想要不要在休市前手動停止跟單:\n` +
           `  週末跳空中位 ±$103、實測最大 $263(你的 0.10 手尺度),\n` +
-          `  疊滿 5 單最壞約 $1,314 — 停損擋不住跳空(以開盤價成交)。`,
+          `  疊滿 5 單最壞約 $1,314 — 停損擋不住跳空(以開盤價成交)。\n` +
+          `若他 04:30 還抱著倉,會再叫你一次(緊急,重複到確認)。`,
           'high', 'calendar');
+      }
+    }
+    // Last call before the weekly close: he is inferred to be holding and in
+    // ≤30 minutes nothing can be undone until Sunday night. This is the one
+    // weekly moment where a wake-up is justified — the decision window shuts.
+    if (mk.open && mk.toWeekClose != null && mk.toWeekClose <= 30 && held.length && copiedTraders.length) {
+      const wk = nw.toISOString().slice(0, 10);
+      if (state.wkHoldCrit !== wk) {
+        state.wkHoldCrit = wk;
+        const ok = await notify(`🚨 他還抱倉,黃金 ${mk.toWeekClose} 分鐘後休市到週一`,
+          `${holdTxt}。休市後整個週末不能停止跟單,停損擋不住週末跳空。\n` +
+          `要出場,現在是最後機會:App → 跟單 → 停止跟單(市價平)。\n` +
+          `不出場也可以 —— 這是提醒你做決定,不是叫你一定要動。`,
+          'urgent', 'rotating_light', true);
+        if (!ok) state.wkHoldCrit = null; // both channels failed → retry next pass
+      }
+    }
+    // Record what he carried into the close; report it when you wake Saturday.
+    if (nw.getUTCDay() === 5 && nw.getUTCHours() === 20 && nw.getUTCMinutes() >= 50) state.heldIntoWeekend = held;
+    if (nw.getUTCDay() === 6 && nw.getUTCHours() === 2 && (state.heldIntoWeekend || []).length) {
+      const wk = nw.toISOString().slice(0, 10);
+      if (state.wkHoldNote !== wk) {
+        state.wkHoldNote = wk;
+        await notify('🛌 他抱倉過週末了',
+          `休市前推斷 ${state.heldIntoWeekend.join('、')} 仍持倉。週一 06:00(台北)開盤前你我都動不了。\n` +
+          `開盤瞬間可能跳空,停損以開盤價成交。開 App 確認實際部位與浮動盈虧。`,
+          'high', 'sleeping');
+      }
+    }
+
+    // Economic calendar: 30-minute warning before US high-impact prints, and
+    // a Monday-morning list of the week. Louder when he is inferred holding.
+    let ecoHot = false;
+    if (copiedTraders.length) {
+      const evs = await ecoEvents();
+      state.ecoSent = state.ecoSent || {};
+      for (const e of evs) {
+        const min = (e.t - Date.now()) / 60000;
+        if (min <= (CFG.ecoHotMinAfter ?? 15) * -1) continue;
+        if (min <= (CFG.ecoHotMinBefore ?? 5)) ecoHot = true;
+        const k = `${e.t}|${e.title}`;
+        if (min > 0 && min <= (CFG.ecoWarnMin ?? 30) && !state.ecoSent[k]) {
+          state.ecoSent[k] = Date.now();
+          await notify(`📅 ${Math.round(min)} 分後 ${e.title}(台北 ${taipei(e.t)})`,
+            `美國高影響數據。目前 ${holdTxt}。\n` +
+            `數據瞬間點差放大、價格可能一根穿過你的停損再拉回;監控在此期間改最快輪詢。`,
+            held.length ? 'high' : 'default', 'calendar');
+        }
+      }
+      for (const k of Object.keys(state.ecoSent)) if (Date.now() - state.ecoSent[k] > 8 * 864e5) delete state.ecoSent[k];
+      if (nw.getUTCDay() === 1 && nw.getUTCHours() === 0) {
+        const wk = nw.toISOString().slice(0, 10);
+        if (state.ecoWeek !== wk) {
+          state.ecoWeek = wk;
+          const list = evs.filter((e) => e.t > Date.now()).sort((a, b) => a.t - b.t)
+            .map((e) => `• ${new Date(e.t + 8 * 3600e3).toISOString().slice(5, 10)} ${taipei(e.t)} ${e.title}`);
+          await notify('📅 本週美國高影響數據(台北時間)',
+            list.length ? list.join('\n') : '本週沒有高影響美元數據。', 'default', 'calendar');
+        }
+      }
+    }
+
+    // Evening reconciliation nudge: the monitor cannot see YOUR account, so
+    // once a day, on days with fills, ask for the one number that catches a
+    // silent divergence (skipped copies, a hit stop, a paused copy).
+    if (nw.getUTCHours() === 12 && copiedTraders.length) {
+      const today = nw.toISOString().slice(0, 10);
+      const rs = results.filter((r) => r.copied && r.dayKey === today && r.dayCloses > 0);
+      if (rs.length && state.reconNag !== today) {
+        state.reconNag = today;
+        const lines = rs.map((r) => `${r.name}:今日 ${r.dayCloses} 筆,他 ${r.dayPnlHis >= 0 ? '+' : ''}$${n(r.dayPnlHis)} → 你估 ${r.dayPnlHis * r.copyMult >= 0 ? '+' : ''}$${n(r.dayPnlHis * r.copyMult)}(分潤前)。監控推估你的權益 ≈ $${n(r.myEqRefOut)}`);
+        await notify('🧾 今日對帳(監控看不到你的帳戶)',
+          lines.join('\n') + `\n\n開 App 看跟單帳戶權益;若差超過 5%,代表有單沒跟到、停損被打、或跟單被暫停 —— 回我一聲。`,
+          'default', 'receipt');
       }
     }
 
@@ -971,6 +1150,7 @@ async function check(rootState, trader) {
         log({ pass, trader: r.name, eq: r.eq, myEq: r.myEq ? +r.myEq.toFixed(2) : null,
           open: r.open.length, gold: r.gold,
           ratio: r.ratio ? +r.ratio.toFixed(4) : null, quietH: +r.quietH.toFixed(1),
+          inferOpen: r.inferOpen, basisMed: r.basisMed, market: mk.open ? 'open' : mk.why,
           daysLeft: r.daysLeft != null ? +r.daysLeft.toFixed(1) : null,
           // Keys can embed sizing/step numbers; digits are stripped so the
           // public Actions log carries the alert TYPE without the figures.
@@ -1004,7 +1184,7 @@ async function check(rootState, trader) {
       }
     }
 
-    const anyOpen = results.some((r) => r.copied && (r.open.length > 0 || r.burst));
+    const anyOpen = results.some((r) => r.copied && (r.open.length > 0 || r.burst)) || ecoHot;
     const wait = cadenceSec(anyOpen, cadenceTraders) * 1000;
     if (Date.now() + wait > deadline) break;
     // Chunked sleep: long cadences (weekend 30 min) starved the heartbeat and
