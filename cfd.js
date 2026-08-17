@@ -77,6 +77,14 @@ async function post(path, body, portfolioId, tries = 5) {
 const cfd = {
   details: (id) => post('/v1/trace/mt5/public/details', { portfolioId: id, languageType: 0 }, id),
   performance: (id) => post('/v1/trace/mt5/public/performance', { portfolioId: id, languageType: 0 }, id),
+  // Money moved between his elite portfolio and spot. transferType 1 = out
+  // (a sweep: your lot denominator shrinks), 0 = in.
+  transfers: (id) => post('/v1/trace/mt5/public/getTransferHistory',
+    { portfolioId: id, languageType: 0, pageNo: 1, pageSize: 10 }, id)
+    .then((d) => (d.rows || []).map((r) => ({
+      t: +r.transferTime, amount: +r.transferAmount, out: +r.transferType === 1,
+      from: r.fromAccountType, to: r.toAccountType }))),
+
   openPositions: (id) => post('/v1/trace/mt5/public/currentPosition',
     { portfolioId: id, languageType: 0, pageNo: 1, pageSize: 50, pre: false }, id)
     .then((d) => d.rows || []),

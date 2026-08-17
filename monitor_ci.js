@@ -464,6 +464,51 @@ async function check(rootState, trader) {
 
   const eq = +perf.totalEquity;
   const lastOrder = +perf.lastOrderTime;
+
+  // Sweeps and crowd flight, every 15 minutes for copied traders. His equity
+  // is the denominator of your lot size: 星火 moved $1,670 out on 2026-08-17
+  // and your copies of his orders doubled in size the same afternoon. The
+  // follower count and AUM are the crowd's verdict — a fast drop means other
+  // copiers saw something (or got stopped out) before we did.
+  if (MY_EQUITY > 0 && now - (state.lastMetaAt || 0) > 15 * 60000) {
+    state.lastMetaAt = now;
+    try {
+      await sleep(500);
+      const tr = await cfd.transfers(id);
+      const known = state.knownTransfers || {};
+      const fresh = tr.filter((x) => !known[`${x.t}|${x.amount}|${x.out ? 1 : 0}`]);
+      for (const x of tr) known[`${x.t}|${x.amount}|${x.out ? 1 : 0}`] = x.t;
+      for (const k of Object.keys(known)) if (now - known[k] > 30 * 864e5) delete known[k];
+      state.knownTransfers = known;
+      if (state.transfersSeeded) {
+        for (const x of fresh) {
+          const pctEq = eq > 0 ? x.amount / (eq + (x.out ? x.amount : 0)) : 0;
+          const big = x.out && pctEq >= 0.1;
+          alerts.push({ key: `transfer-${x.t}`, p: big ? 'high' : 'default', tags: x.out ? 'outbox_tray' : 'inbox_tray',
+            t: `${x.out ? '💸 他轉出' : '💰 他轉入'} ${n(x.amount, 0)}${big ? ' — 你的手數會放大' : ''}`,
+            b: `${new Date(x.t + 8 * 3600e3).toISOString().slice(5, 16)} 台北 ${x.from} → ${x.to}\n` +
+               (x.out ? `他的權益是你手數的分母:轉出 ${n(pctEq * 100, 0)}% 後,同樣的單你會多跟約 ${n(1 / (1 - Math.min(pctEq, 0.95)), 2)} 倍。\n` +
+                        `只有 Max lot 上限能擋。目前上限 ${trader.maxLotPerTrade ? n(+trader.maxLotPerTrade) : '未設'}。` :
+                        `他的權益變大 → 同樣的單你跟的手數會縮小。`) });
+        }
+      }
+      state.transfersSeeded = true;
+      const d = await cfd.details(id).catch(() => null);
+      const pd = d && d.publicDetail;
+      if (pd) {
+        const fol = +pd.curFollowCount || 0, aum = +pd.aum || 0;
+        const hist = (state.crowd = state.crowd || []);
+        hist.push({ t: now, fol, aum });
+        while (hist.length && now - hist[0].t > 24 * 3600e3) hist.shift();
+        const maxFol = Math.max(...hist.map((h) => h.fol)), maxAum = Math.max(...hist.map((h) => h.aum));
+        if (hist.length >= 4 && maxFol >= 20 && (fol <= maxFol * 0.85 || aum <= maxAum * 0.75)) {
+          alerts.push({ key: 'crowd-flight', p: 'high', cool: 720, tags: 'runner',
+            t: `🏃 跟單者在跑:${maxFol}→${fol} 人,AUM ${n(maxAum, 0)}→${n(aum, 0)}`,
+            b: `24 小時內跟單人數或資產大幅下降。別人可能先看到了什麼(或被停損掃出)。\n開 App 看他的近況與你的浮虧。` });
+        }
+      }
+    } catch (e) { log({ trader: trader.name, metaError: e.message }); }
+  }
   let pendingCapraise = null;
 
   // The open view is blind, but his EQUITY is not: it carries unrealized PnL.
@@ -1175,6 +1220,31 @@ async function check(rootState, trader) {
     }
     // Record what he carried into the close; report it when you wake Saturday.
     if (nw.getUTCDay() === 5 && nw.getUTCHours() === 20 && nw.getUTCMinutes() >= 50) state.heldIntoWeekend = held;
+    // Weekend gap preview: the perp trades through the weekend, so by Sunday
+    // evening we already know roughly where gold will reopen. Record the perp
+    // at the Friday close, and on Sunday 20:00 Taipei (12 UTC) tell the user
+    // how far it has moved if he carried positions into the closure.
+    if (!mk.open && mk.why === 'weekend') {
+      if (state.friPerp == null || (nw.getUTCDay() === 5)) {
+        const g = await goldNow().catch(() => null);
+        if (g != null && (state.friPerp == null || nw.getUTCDay() === 5)) state.friPerp = g;
+      }
+      if (nw.getUTCDay() === 0 && nw.getUTCHours() === 12 && (state.heldIntoWeekend || []).length && state.friPerp != null) {
+        const wk = nw.toISOString().slice(0, 10);
+        if (state.gapNote !== wk) {
+          state.gapNote = wk;
+          const g = await goldNow().catch(() => null);
+          if (g != null) {
+            const mv = g - state.friPerp;
+            await notify(`📉 週末跳空預告:永續已比週五收盤 ${mv >= 0 ? '+' : ''}${n(mv)}/oz`,
+              `他休市前推斷仍持倉(${state.heldIntoWeekend.join('、')})。\n` +
+              `週一 06:00 台北開盤大約在這附近;每 0.10 手 = ${mv >= 0 ? '+' : ''}${n(mv * 10)}(方向要看他是多是空)。\n` +
+              `停損以開盤價成交,擋不住跳空。開盤前你我都動不了,這只是讓你心裡有數。`,
+              Math.abs(mv) >= 15 ? 'high' : 'default', 'chart_with_downwards_trend');
+          }
+        }
+      }
+    } else if (mk.open && nw.getUTCDay() === 1) state.friPerp = null;
     if (nw.getUTCDay() === 6 && nw.getUTCHours() === 2 && (state.heldIntoWeekend || []).length) {
       const wk = nw.toISOString().slice(0, 10);
       if (state.wkHoldNote !== wk) {
