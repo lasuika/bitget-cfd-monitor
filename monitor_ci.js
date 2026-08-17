@@ -954,11 +954,11 @@ async function check(rootState, trader) {
       state.floatStep = step;
       state.floatWarned = true;
       alerts.push({ key: `float-drift-${step}`, p: 'urgent', crit: true, cool: 30, tags: 'rotating_light',
-        t: `🚨 他持倉中浮虧 ${n(-eqDrift)} → 你約 -${n(-mine)}${step > 1 ? '(擴大)' : ''}`,
-        b: `他的權益從平倉基準 ${n(flatEq)} 掉到 ${n(eq)}。\n` +
-           `以你的手數推估浮虧 -${n(-mine)}(權益 ${n(pct * 100, 0)}%)。\n` +
-           (step > 1 ? `比上次警報更深 —— 他很可能加碼了;這麼深至少對應 ${stops} 單的 ${trader.stopPerOrder || 300} 停損。\n` : '') +
-           `你的每單停損 ${trader.stopPerOrder || '?'} 在交易所端等著;` +
+        t: `🚨 他持倉中浮虧 $${n(-eqDrift)} → 你約 -$${n(-mine)}${step > 1 ? '(擴大)' : ''}`,
+        b: `他的權益從平倉基準 $${n(flatEq)} 掉到 $${n(eq)}。\n` +
+           `以你的手數推估浮虧 -$${n(-mine)}(權益 ${n(pct * 100, 0)}%)。\n` +
+           (step > 1 ? `比上次警報更深 —— 他很可能加碼了;這麼深至少對應 ${stops} 單的 $${trader.stopPerOrder || 300} 停損。\n` : '') +
+           `你的每單停損 $${trader.stopPerOrder || '?'} 在交易所端等著;` +
            `要提前出場只能 App → 停止跟單。\n\n` +
            `(監控看不到持倉,這是從他的權益反推的;權益端點有延遲。開 App 看真實數字。)` });
     } else if (pct >= CFG.emergencyFloatPct * 0.5 && !state.floatWarned && !state.floatHalf) {
