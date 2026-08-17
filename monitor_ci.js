@@ -355,6 +355,7 @@ async function check(rootState, trader) {
   // have while he holds — it drives the tight cadence and a floating-loss
   // alert. Learned the hard way: he sat in two shorts for hours while the
   // monitor idled at 5-minute polls because "no new close" read as "quiet".
+  if (state.flatEq == null && eq > 0) state.flatEq = +trader.flatEqSeed || eq;
   const flatEq = state.flatEq;
   const eqDrift = flatEq != null && eq > 0 ? eq - flatEq : null;
   const inferOpen = eqDrift != null && Math.abs(eqDrift) >= (CFG.openInferUsd ?? 2);
@@ -845,11 +846,6 @@ async function check(rootState, trader) {
     }
   }
   if (!inferOpen) state.floatHalf = false;
-  // First-ever baseline. Seeding from CURRENT equity would be wrong if he is
-  // mid-position right now (equity already carries the float, and the drift
-  // would read as zero). Prefer the config seed the operator set from a known
-  // flat reading; fall back to current equity only when none is given.
-  if (state.flatEq == null && eq > 0) state.flatEq = +trader.flatEqSeed || eq;
 
   const burst = (state.burstUntil || 0) > now || inferOpen;
   return { alerts, eq, open, gold, quietH, burst, histOk, copied: MY_EQUITY > 0,
