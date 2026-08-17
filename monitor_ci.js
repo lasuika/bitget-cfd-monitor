@@ -239,23 +239,41 @@ function heartbeat(force = false, suffix = '') {
 // dances left zero-coverage windows, and queued stale-code runs stole the
 // slot. A leg that notices main has moved past its own commit saves state and
 // steps aside, letting the queued newer run take over within seconds.
-function newerCommitExists() {
-  const repo = process.env.GITHUB_REPOSITORY, sha = process.env.GITHUB_SHA;
-  const tok = process.env.GITHUB_TOKEN;
-  if (!repo || !sha) return Promise.resolve(false);   // local runs
+//
+// The condition is "a NEWER RUN of this workflow is waiting with a different
+// commit", not merely "main moved". The first version keyed on main's SHA and
+// a docs-only push with no dispatch made every leg yield to a run that did not
+// exist — a 2-hour hole until the next cron. Test dispatches (monitor job
+// skipped) are excluded by checking the candidate's jobs.
+function ghJson(p, tok) {
   return new Promise((resolve) => {
     const req = https.request({
-      hostname: 'api.github.com', path: `/repos/${repo}/commits/heads/main`,
-      headers: { 'User-Agent': 'cfd-monitor', Accept: 'application/vnd.github.sha',
+      hostname: 'api.github.com', path: p,
+      headers: { 'User-Agent': 'cfd-monitor', Accept: 'application/vnd.github+json',
         ...(tok ? { Authorization: `Bearer ${tok}` } : {}) },
     }, (res) => {
       let b = ''; res.on('data', (c) => (b += c));
-      res.on('end', () => resolve(res.statusCode === 200 && b.trim() !== sha));
+      res.on('end', () => { try { resolve(res.statusCode === 200 ? JSON.parse(b) : null); } catch { resolve(null); } });
     });
-    req.on('error', () => resolve(false));
-    req.setTimeout(8000, () => { req.destroy(); resolve(false); });
+    req.on('error', () => resolve(null));
+    req.setTimeout(8000, () => { req.destroy(); resolve(null); });
     req.end();
   });
+}
+async function newerCommitExists() {
+  const repo = process.env.GITHUB_REPOSITORY, sha = process.env.GITHUB_SHA;
+  const runId = +process.env.GITHUB_RUN_ID, tok = process.env.GITHUB_TOKEN;
+  if (!repo || !sha || !runId) return false;          // local runs
+  const wf = (process.env.GITHUB_WORKFLOW_REF || '').split('@')[0].split('/').pop() || 'monitor.yml';
+  const list = await ghJson(`/repos/${repo}/actions/workflows/${wf}/runs?per_page=6`, tok);
+  const cands = ((list && list.workflow_runs) || []).filter((r) =>
+    r.id > runId && r.head_sha !== sha && r.status !== 'completed');
+  for (const r of cands) {
+    const jobs = await ghJson(`/repos/${repo}/actions/runs/${r.id}/jobs?per_page=10`, tok);
+    const monitorJob = ((jobs && jobs.jobs) || []).some((j) => /^monitor/.test(j.name) && j.conclusion !== 'skipped');
+    if (monitorJob) return true;
+  }
+  return false;
 }
 
 const traderUrl = (id) => `https://www.bitget.com/copy-trading/cfd-trader/${id}`;
