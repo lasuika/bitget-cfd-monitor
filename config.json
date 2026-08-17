@@ -36,9 +36,9 @@
   {
    "name": "TraderEthan",
    "portfolioId": "1469255871432253440",
-   "myEquity": 2000,
+   "myEquity": 0,
    "myEquityAt": "2026-08-14",
-   "_note": "他固定開 0.02 手;你的階梯每 (他的權益/2) 一階。他權益變動會直接改變你的手數。",
+   "_note": "2026-08-18 已停止跟單(浮虧事件後),改 watch-only",
    "activeHoursUtc": [
     0,
     1,
@@ -80,7 +80,7 @@
   {
    "name": "星火-起航万倍",
    "portfolioId": "1471086769152733184",
-   "myEquity": 0,
+   "myEquity": 1352,
    "myEquityAt": "2026-08-18",
    "baseLot": 0.15,
    "variableLots": true,
