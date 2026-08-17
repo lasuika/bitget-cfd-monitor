@@ -70,7 +70,10 @@
    "_stop": "2026-08-14 依 MAE 精算從 200 調升:兩筆 $18.2 貼著 $20 觸發線,月誤殺 2-3 次;$30 在雜訊包絡外且仍先於清算($40)",
    "baseLot": 0.02,
    "lossAlertUsd": 5,
-   "ddAlertHisUsd": 40
+   "ddAlertHisUsd": 40,
+   "capPolicy": "fixed",
+   "capReviewAtTrades": 100,
+   "_capPolicy": "2026-08-17 用戶決定:固定派。Max lot 釘在 0.10,獲利不滾入,到 100 筆再重新評估。📈 調高建議在此之前靜音。"
   }
  ],
  "cliffWarnDays": 14,

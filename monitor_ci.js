@@ -625,7 +625,12 @@ async function check(rootState, trader) {
   }
 
   // Deferred cap-raise emission — the regime flags are now this pass's.
-  if (pendingCapraise && MY_EQUITY > 0) {
+  // The user chose a fixed-cap policy until the 100-trade review: profits sit
+  // out, exposure stays constant. Raising advice before that is noise by their
+  // own decision, so it is muted; the milestone alert carries the reminder.
+  const tradesSoFar = +perf.totalTrades || 0;
+  const capMuted = trader.capPolicy === 'fixed' && tradesSoFar < (+trader.capReviewAtTrades || 0);
+  if (pendingCapraise && MY_EQUITY > 0 && !capMuted) {
     const { stepsOver, rawSteps, myEqNow } = pendingCapraise;
     const recentLoss = state.lastRealLossAt && now - state.lastRealLossAt < 3 * 864e5;
     if (!state.wrLow && !recentLoss) {
@@ -794,7 +799,9 @@ async function check(rootState, trader) {
         state.milestone = m;
         alerts.push({ key: `milestone-${m}`, p: 'default', tags: 'dart',
           t: `🎯 他的樣本到 ${m} 筆了`,
-          b: `統計基礎比你進場時(44 筆)厚了 ${n(m / 44, 1)} 倍。\n值得重跑一次完整分析,再決定加碼、維持或退出。` });
+          b: `統計基礎比你進場時(44 筆)厚了 ${n(m / 44, 1)} 倍。\n值得重跑一次完整分析,再決定加碼、維持或退出。` +
+             (trader.capPolicy === 'fixed' && m >= (+trader.capReviewAtTrades || Infinity)
+               ? `\n\n你之前決定 Max lot 釘在 ${n(+trader.maxLotPerTrade || 0)} 到這時候再評估 — 現在到了。` : '') });
         break;
       }
     }
