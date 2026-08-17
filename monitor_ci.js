@@ -19,9 +19,11 @@ const fs = require('fs');
 const path = require('path');
 const https = require('https');
 const { cfd, norm, OZ_PER_LOT, sleep } = require('./cfd.js');
+const { shadowNow } = require('./shadow.js');
 
 const DIR = __dirname;
 const CFG = JSON.parse(fs.readFileSync(path.join(DIR, 'config.json'), 'utf8'));
+const SHADOW_P = JSON.parse(fs.readFileSync(path.join(DIR, 'shadow-params.json'), 'utf8'));
 const STATE_FILE = path.join(DIR, 'state.json');
 
 const NTFY_TOPIC = process.env.NTFY_TOPIC || CFG.ntfyTopic;
@@ -521,6 +523,34 @@ async function check(rootState, trader) {
   const flatEq = state.flatEq;
   const eqDrift = flatEq != null && eq > 0 ? eq - flatEq : null;
   const inferOpen = eqDrift != null && Math.abs(eqDrift) >= (CFG.openInferUsd ?? 2);
+  // Shadow-ladder estimate (opt-in per trader). Simulates his ladder from the
+  // perp path since the last KNOWN close; see shadow.js for what it is and is
+  // not. Candles live in memory only — 16h at 1m fits one API page.
+  let shadow = null;
+  if (trader.shadow && closed.length) {
+    try {
+      const cache = (globalThis.__candles = globalThis.__candles || new Map());
+      const r = await pub(`/api/v2/mix/market/candles?symbol=XAUUSDT&productType=USDT-FUTURES&granularity=1m&endTime=${now}&limit=1000`);
+      for (const c of (r.data || [])) cache.set(+c[0], [+c[0], +c[1], +c[2], +c[3], +c[4], +c[5]]);
+      for (const k of cache.keys()) if (now - k > 20 * 3600e3) cache.delete(k);
+      const lastClose = Math.max(...closed.map((t) => t.closeTime || 0));
+      const lastSide = closed.filter((t) => t.closeTime === lastClose).map((t) => t.side)[0] || null;
+      const from = Math.max(lastClose, now - 16 * 3600e3);
+      shadow = shadowNow({ map: cache }, from, now, SHADOW_P, lastSide);
+      if (shadow) {
+        shadow.floatCons = shadow.float < 0 ? shadow.float * 1.4 : shadow.float; // measured 1/3 under-estimate
+        const prev = state.shadow;
+        state.shadow = { holding: shadow.holding, n: shadow.n, side: shadow.side, avg: shadow.avg, float: shadow.float, at: now };
+        if (shadow.holding && !(prev && prev.holding) && MY_EQUITY > 0) {
+          alerts.push({ key: 'shadow-open', p: 'default', cool: 30, tags: 'crystal_ball',
+            t: `🔮 影子模型:他可能開了${shadow.side === 'long' ? '多' : '空'}單`,
+            b: `從金價路徑推估(不是真資料;歷史準確率 85%,方向 90%)。\n` +
+               `若成立,你的每單 ${trader.stopPerOrder || 300} 停損已在交易所端等著。` });
+        }
+      }
+    } catch (e) { log({ trader: trader.name, shadowError: e.message }); }
+  }
+  const shadowHold = !!(shadow && shadow.holding);
   if (inferOpen && !state.inferOpen) state.inferOpenSince = now;
   if (!inferOpen) { state.inferOpenSince = null; state.dirInfer = null; }
   state.inferOpen = inferOpen;
@@ -537,6 +567,7 @@ async function check(rootState, trader) {
       state.dirInfer = { side: same ? 'long' : 'short', how: 'drift', at: now };
     }
     if (state.dirRefEq == null || Math.abs(eq - state.dirRefEq) >= 2) { state.dirRefEq = eq; state.dirRefGold = gold; }
+    if (!state.dirInfer && shadowHold && shadow.side) state.dirInfer = { side: shadow.side, how: 'shadow', at: now };
     if (!state.dirInfer && closed.length) {
       const last = [...closed].filter((t) => t.closeTime).sort((a, b) => b.closeTime - a.closeTime)[0];
       if (last && now - last.closeTime < 6 * 3600e3) state.dirInfer = { side: last.side, how: 'lastclose', at: now };
@@ -1071,7 +1102,8 @@ async function check(rootState, trader) {
            (step > 1 ? `比上次警報更深 —— 他很可能加碼了;這麼深至少對應 ${stops} 單的 $${trader.stopPerOrder || 300} 停損。\n` : '') +
            `你的每單停損 $${trader.stopPerOrder || '?'} 在交易所端等著;` +
            `要提前出場只能 App → 停止跟單。\n\n` +
-           `(監控看不到持倉,這是從他的權益反推的;權益端點有延遲。開 App 看真實數字。)` });
+           (shadowHold ? `\n影子模型估計:${shadow.n} 腿${shadow.side === 'long' ? '多' : '空'}、均價 ${n(shadow.avg)}、浮動約 ${n(shadow.floatCons)}(保守值;模型準確率 85%)。` : '') +
+           `\n(監控看不到持倉,這是從他的權益反推的;權益端點有延遲。開 App 看真實數字。)` });
     } else if (pct >= CFG.emergencyFloatPct * 0.5 && !state.floatWarned && !state.floatHalf) {
       state.floatHalf = true;
       alerts.push({ key: 'float-half', p: 'high', cool: 60, tags: 'warning',
@@ -1081,12 +1113,12 @@ async function check(rootState, trader) {
   }
   if (!inferOpen) state.floatHalf = false;
 
-  const burst = (state.burstUntil || 0) > now || inferOpen;
+  const burst = (state.burstUntil || 0) > now || inferOpen || shadowHold;
   const bs = (state.basis || []).slice(-20);
   const basisMed = bs.length ? bs.map((x) => Math.abs(x.close)).sort((a, b) => a - b)[bs.length >> 1] : null;
   return { alerts, eq, open, gold, quietH, burst, histOk, copied: MY_EQUITY > 0,
     inferOpen, basisMed, dayCloses: state.dayCloses || 0, dayPnlHis: state.dayPnlHis || 0,
-    inferOpenSince: state.inferOpenSince, dirInfer: state.dirInfer,
+    inferOpenSince: state.inferOpenSince, dirInfer: state.dirInfer, shadow: state.shadow || null,
     dayKey: state.dayKey, copyMult, myEqRefOut: state.myEqEstimate || MY_EQUITY,
     name: trader.name, id, daysLeft: state.daysLeft,
     ratio: MY_EQUITY > 0 ? (state.myEqEstimate || MY_EQUITY) / eq : null,
@@ -1320,7 +1352,7 @@ async function check(rootState, trader) {
         if (state.sent[key] && Date.now() - state.sent[key] < 120 * 60000) continue;
         const ok = await notify(`⚠️ 他逆勢扛單:同儕 ${Math.round(100 * votes[bias] / tot)}% 在${bias === 'long' ? '做多' : '做空'},他推斷${r.dirInfer.side === 'long' ? '做多' : '做空'} · ${r.name}`,
           `近 ${CFG.peerWindowMin ?? 90} 分鐘同儕平倉:多 ${votes.long} / 空 ${votes.short}\n${who.join('\n')}\n\n` +
-          `他已推斷持倉 ${Math.round((Date.now() - r.inferOpenSince) / 60000)} 分鐘,方向來自${r.dirInfer.how === 'drift' ? '權益 vs 金價反推' : '最近一筆平倉方向'}(不保證)。\n` +
+          `他已推斷持倉 ${Math.round((Date.now() - r.inferOpenSince) / 60000)} 分鐘,方向來自${r.dirInfer.how === 'drift' ? '權益 vs 金價反推' : r.dirInfer.how === 'shadow' ? '影子模型' : '最近一筆平倉方向'}(不保證)。\n` +
           `這是「大家順勢賺、他逆勢扛」的紅旗,不是進出訊號。開 App 確認他的實際方向與你的浮虧。`,
           'high', 'warning', false, traderUrl(r.id));
         if (ok) state.sent[key] = Date.now();
@@ -1353,6 +1385,7 @@ async function check(rootState, trader) {
           open: r.open.length, gold: r.gold,
           ratio: r.ratio ? +r.ratio.toFixed(4) : null, quietH: +r.quietH.toFixed(1),
           inferOpen: r.inferOpen, basisMed: r.basisMed, market: mk.open ? 'open' : mk.why,
+          shadow: r.shadow && r.shadow.holding ? `${r.shadow.n}${r.shadow.side[0]}@${r.shadow.avg.toFixed(1)}:${r.shadow.float.toFixed(0)}` : (r.shadow ? 'flat' : null),
           daysLeft: r.daysLeft != null ? +r.daysLeft.toFixed(1) : null,
           // Keys can embed sizing/step numbers; digits are stripped so the
           // public Actions log carries the alert TYPE without the figures.

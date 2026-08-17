@@ -1,0 +1,59 @@
+{
+ "offset": 3.780000000000655,
+ "lag": 3,
+ "firstLot": 0.15,
+ "delay": 0,
+ "lookback": 15,
+ "thresh": 99,
+ "maxWait": 20,
+ "addSpacing": 12,
+ "addLot": 0.05,
+ "maxLegs": 3,
+ "tp": 2,
+ "tpMode": "first",
+ "quiet": [
+  10,
+  16
+ ],
+ "selfClose": false,
+ "_fitted": "2026-08-17T18:46:25.833Z",
+ "_train": [
+  "2026-08-11T14:00:28.699Z",
+  "2026-08-13T09:24:23.782Z"
+ ],
+ "_trainMetrics": {
+  "minutes": 2484,
+  "acc": 0.6727053140096618,
+  "precision": 0.6779661016949152,
+  "recall": 0.8316008316008316,
+  "tp": 1200,
+  "fp": 570,
+  "fn": 243,
+  "tn": 471,
+  "nMAE": 3.7028985507246377,
+  "floatMAE": 163.6814855072443,
+  "floatCorr": 0.15862424369343867,
+  "sideAcc": 0.75,
+  "truthHoldFrac": 0.5809178743961353
+ },
+ "_meaning": {
+  "offset": "perp close - CFD fill, 中位數 (USD/oz)",
+  "lag": "成交紀錄延遲 (min); 收到平倉紀錄後狀態歸零並從平倉時刻重跑",
+  "delay/maxWait": "平倉後 (或市場開盤/靜默期結束後) 等 maxWait 分鐘視為已重新進場; thresh=99 代表不用 15m 動能觸發, 只用動能方向決定多空 (逆勢: 15m 漲->空, 跌->多)",
+  "addSpacing/addLot/maxLegs": "價格對第一/前一腿不利 addSpacing $/oz 就加一腿 addLot lot, 最多 maxLegs 腿",
+  "tp/tpMode": "第一腿 (最差腿) 回到 +tp $/oz 時標記 tpHit(可能正在平倉); 不自行平倉, 只有真實平倉紀錄能讓狀態歸零",
+  "quiet": "UTC 10:00-16:00 不假設新進場; 另 21:00-22:00 與週末 (五 21:00 -> 日 22:00) 市場關閉",
+  "selfClose": "false = 上述不自平倉模式 (建議); true = 舊模式, 觸及 tp 就自行歸零"
+ },
+ "_testMetrics": {
+  "window": "2026-08-13T09:24Z -> 2026-08-17T16:28Z (後 40% episodes, 19 段)",
+  "acc": 0.848,
+  "precision": 0.83,
+  "recall": 0.96,
+  "nMAE": 0.79,
+  "floatMAE_usd": 97,
+  "floatCorr": 0.81,
+  "sideAcc": 0.9,
+  "bestBaseline_inv60_acc": 0.749
+ }
+}
