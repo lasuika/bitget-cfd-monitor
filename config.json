@@ -113,7 +113,8 @@
    "_note": "6 天歷史、30 單併發、0.01–0.15 手加碼梯、最深浮虧 -$808(權益 60%)、單部位最深 -$41/oz。baseLot=最常用 0.15(61/112 筆)。myEquity 由 MY_EQUITY_3 覆寫。",
    "profitShare": 0.3,
    "_fills": "2026-08-18 00:31 起跟;首批 3 筆 0.14/0.04/0.14 手(他 0.15/0.05/0.15,比例約 0.93–0.99),分潤 30%,費 $6/手",
-   "shadow": true
+   "shadow": true,
+   "showsPositions": true
   }
  ],
  "cliffWarnDays": 14,

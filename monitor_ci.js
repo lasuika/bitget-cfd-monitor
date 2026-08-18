@@ -387,7 +387,7 @@ async function check(rootState, trader) {
   // fresh replica is the one that moved; a stale one can only sit at an old
   // value. Trade count takes the max (it never goes down).
   let perf = await cfd.performance(id);
-  if (MY_EQUITY > 0) {
+  if (MY_EQUITY > 0 && !state.openViewAlive) {
     const reads = [perf];
     for (let i = 0; i < 2; i++) { await sleep(400); reads.push(await cfd.performance(id).catch(() => null)); }
     const ok = reads.filter((r) => r && Number.isFinite(+r.totalEquity));
@@ -416,7 +416,11 @@ async function check(rootState, trader) {
   // the rate-limited budget on a canary whose only job is noticing if Bitget
   // ever unhides it — hourly is plenty for that.
   let open = [];
-  if (now - (state.lastCanaryAt || 0) > 3600e3) {
+  // 星火 turned out to publish his positions (4 real rows on 2026-08-17 20:54
+  // UTC, then 0 when flat) — a per-trader display setting, not a Bitget
+  // change. Once the view has answered for a trader it becomes the PRIMARY
+  // path for him and is read every pass; the hourly canary stays for the rest.
+  if (state.openViewAlive || trader.showsPositions || now - (state.lastCanaryAt || 0) > 3600e3) {
     state.lastCanaryAt = now;
     await sleep(700);
     open = (await cfd.openPositions(id).catch(() => [])).map(norm);
@@ -456,6 +460,27 @@ async function check(rootState, trader) {
   // Canary: if the open view ever starts returning rows — a Bitget change, or
   // an authenticated future — the unrealised-risk alerts come back to life,
   // and that changes the protection posture enough to be worth a notification.
+  // Real open events, only possible for traders whose positions are shown.
+  // Keyed by position id; ids that vanish are closes and history reports them.
+  if (state.openViewAlive || open.length) {
+    const seen = state.knownOpen || {};
+    const fresh = open.filter((p) => p.id && !seen[p.id]);
+    const nowIds = {};
+    for (const p of open) if (p.id) nowIds[p.id] = p.openTime || now;
+    state.knownOpen = nowIds;
+    if (state.openSeeded && fresh.length) {
+      const eq0 = +perf.totalEquity || 0;
+      const r0 = MY_EQUITY > 0 && eq0 > 0 ? (state.myEqEstimate || MY_EQUITY) / eq0 : 0;
+      const mine = (lots) => (r0 > 0 ? Math.min(Math.floor(lots * r0 * 100) / 100, lotCap) : 0);
+      alerts.push({ key: `open-${fresh.map((p) => p.id).join(',')}`, p: 'high', tags: 'green_book',
+        t: `📗 他開倉 ${fresh.length} 筆:${fresh.map((p) => `${p.side === 'long' ? '多' : '空'} ${n(p.lots)}`).join('、')}`,
+        b: fresh.map((p) => `${p.side === 'long' ? '多' : '空'} ${n(p.lots)} 手 @ ${n(p.openPrice)}` +
+             (mine(p.lots) ? `(你約 ${n(mine(p.lots))} 手)` : '')).join('\n') +
+           `\n目前共 ${open.length} 筆持倉` +
+           (MY_EQUITY > 0 ? `;你的每單停損 ${trader.stopPerOrder || '?'} 在交易所端。` : '。') });
+    }
+    state.openSeeded = true;
+  }
   if (open.length && !state.openViewAlive) {
     state.openViewAlive = true;
     alerts.push({ key: 'open-view-alive', p: 'high', tags: 'eyes',
@@ -527,7 +552,7 @@ async function check(rootState, trader) {
   // perp path since the last KNOWN close; see shadow.js for what it is and is
   // not. Candles live in memory only — 16h at 1m fits one API page.
   let shadow = null;
-  if (trader.shadow && closed.length) {
+  if (trader.shadow && closed.length && !state.openViewAlive) {
     try {
       const cache = (globalThis.__candles = globalThis.__candles || new Map());
       const r = await pub(`/api/v2/mix/market/candles?symbol=XAUUSDT&productType=USDT-FUTURES&granularity=1m&endTime=${now}&limit=1000`);
@@ -766,7 +791,7 @@ async function check(rootState, trader) {
         alerts.push({ key: `closed-${fresh.map((t) => t.id).join(',')}`,
           p: bad ? 'urgent' : 'default', crit: bad, tags: bad ? 'rotating_light' : 'receipt',
           t: `${bad ? '🚨' : '📄'} 他平倉 ${fresh.length} 筆 ${realised >= 0 ? '+' : ''}$${n(realised)}` +
-             (copyMult > 0 ? `(你約 ${realisedUser >= 0 ? '+' : ''}$${n(realisedUser)})` : ''),
+             (MY_EQUITY > 0 && copyMult > 0 ? `(你約 ${realisedUser >= 0 ? '+' : ''}${n(realisedUser)})` : ''),
           b: fresh.slice(0, 5).map((t) =>
             `${t.side === 'long' ? '多' : '空'} ${n(t.lots)} 手 ${n(t.openPrice)}→${n(t.closePrice)} ` +
             `${t.profit >= 0 ? '+' : ''}$${n(t.profit)} (${n((t.closeTime - t.openTime) / 60000, 1)} 分)`
@@ -1041,10 +1066,20 @@ async function check(rootState, trader) {
   if (state.lastEquity && eq > 0) {
     const eqMine = state.myEqEstimate || MY_EQUITY || 0;
     const lotAt = (hisEq) => Math.min(Math.floor(baseLot * (eqMine / hisEq) * 100) / 100, lotCap);
-    const before = lotAt(state.lastEquity);
+    // Variable-lot traders compare against the equity at the LAST ALERT, so a
+    // slow drift still surfaces once it adds up, while minute-to-minute float
+    // wobble does not.
+    const refEq = trader.variableLots ? (state.lotRefEq || state.lastEquity) : state.lastEquity;
+    const before = lotAt(refEq);
     const after = lotAt(eq);
-    const moved = Math.abs(eq - state.lastEquity) / state.lastEquity;
-    if (MY_EQUITY > 0 && after !== before) {
+    const moved = Math.abs(eq - refEq) / refEq;
+    // Variable-lot traders' equity swings with their float every minute; a
+    // 0.01 step there is noise (five alerts in twenty minutes last night).
+    // Require two steps AND a 15% equity move for them.
+    const minStep = trader.variableLots ? 0.02 : 0.01;
+    const stepOk = Math.abs(after - before) >= minStep - 1e-9 && (!trader.variableLots || moved >= 0.15);
+    if (MY_EQUITY > 0 && after !== before && stepOk) {
+      state.lotRefEq = eq;
       alerts.push({ key: `lotstep-${Math.round(after * 100)}`, p: 'urgent', crit: after > before,
         tags: 'chart_with_upwards_trend',
         t: `${after > before ? '🚨 你的部位變大了' : '🔻 你的部位變小了'}`,
@@ -1062,6 +1097,7 @@ async function check(rootState, trader) {
     }
   }
   state.lastEquity = eq;
+  if (trader.variableLots && !state.lotRefEq && eq > 0) state.lotRefEq = eq;
   // Sample maturity: 44 trades was a snapshot, not a record. Nudge a re-run of
   // the full analysis as the sample grows instead of trusting day-7 statistics.
   const tot = +perf.totalTrades || 0;
