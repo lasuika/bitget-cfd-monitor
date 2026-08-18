@@ -764,7 +764,7 @@ async function check(rootState, trader) {
             const pc = await perpCloseAt(t.closeTime);
             const po = await perpCloseAt(t.openTime);
             if (pc != null && po != null) {
-              const b = (state.basis = state.basis || []);
+              const b = (state.basisHist = Array.isArray(state.basisHist) ? state.basisHist : []);
               b.push({ t: t.closeTime, open: +(t.openPrice - po).toFixed(2), close: +(t.closePrice - pc).toFixed(2) });
               while (b.length > 60) b.shift();
               // The perp carries a persistent premium over the CFD (measured on
@@ -957,6 +957,7 @@ async function check(rootState, trader) {
 
   if (gold != null && open.length) {
     const avg = open.reduce((s, p) => s + p.openPrice, 0) / open.length;
+    if (typeof state.basis !== 'number') state.basis = null;
     state.basis = state.basis == null ? avg - gold : state.basis * 0.8 + (avg - gold) * 0.2;
   }
 
@@ -1150,7 +1151,7 @@ async function check(rootState, trader) {
   if (!inferOpen) state.floatHalf = false;
 
   const burst = (state.burstUntil || 0) > now || inferOpen || shadowHold;
-  const bs = (state.basis || []).slice(-20);
+  const bs = (Array.isArray(state.basisHist) ? state.basisHist : []).slice(-20);
   const basisMed = bs.length ? bs.map((x) => Math.abs(x.close)).sort((a, b) => a - b)[bs.length >> 1] : null;
   return { alerts, eq, open, gold, quietH, burst, histOk, copied: MY_EQUITY > 0,
     inferOpen, basisMed, dayCloses: state.dayCloses || 0, dayPnlHis: state.dayPnlHis || 0,
