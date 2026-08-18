@@ -480,7 +480,8 @@ async function check(rootState, trader) {
       alerts.push({ key: `open-${fresh.map((p) => p.id).join(',')}`, p: 'high', tags: 'green_book',
         t: `📗 他開倉 ${fresh.length} 筆:${fresh.map((p) => `${p.side === 'long' ? '多' : '空'} ${n(p.lots)}`).join('、')}`,
         b: fresh.map((p) => `${p.side === 'long' ? '多' : '空'} ${n(p.lots)} 手 @ ${n(p.openPrice)}` +
-             (mine(p.lots) ? `(你約 ${n(mine(p.lots))} 手)` : '')).join('\n') +
+             (mine(p.lots) ? `(你約 ${n(mine(p.lots))} 手)` : '') +
+             (p.openTime ? `,開於 ${new Date(p.openTime + 8 * 3600e3).toISOString().slice(11, 16)} 台北(公開視圖延遲 ${Math.round((now - p.openTime) / 60000)} 分)` : '')).join('\n') +
            `\n目前共 ${open.length} 筆持倉` +
            (MY_EQUITY > 0 ? `;你的每單停損 ${trader.stopPerOrder || '?'} 在交易所端。` : '。') });
     }
