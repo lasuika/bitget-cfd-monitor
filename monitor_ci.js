@@ -547,7 +547,14 @@ async function check(rootState, trader) {
   if (state.flatEq == null && eq > 0) state.flatEq = +trader.flatEqSeed || eq;
   const flatEq = state.flatEq;
   const eqDrift = flatEq != null && eq > 0 ? eq - flatEq : null;
-  const inferOpen = eqDrift != null && Math.abs(eqDrift) >= (CFG.openInferUsd ?? 2);
+  // When his positions are visible, the truth wins: holding = rows present, and
+  // a flat read re-baselines equity (his float is zero by definition). The
+  // drift inference stays only for traders whose view is blind.
+  let inferOpen = eqDrift != null && Math.abs(eqDrift) >= (CFG.openInferUsd ?? 2);
+  if (state.openViewAlive) {
+    inferOpen = open.length > 0;
+    if (!open.length && eq > 0) { state.flatEq = eq; state.floatWarned = false; state.floatStep = 0; }
+  }
   // Shadow-ladder estimate (opt-in per trader). Simulates his ladder from the
   // perp path since the last KNOWN close; see shadow.js for what it is and is
   // not. Candles live in memory only — 16h at 1m fits one API page.
