@@ -589,9 +589,11 @@ async function check(rootState, trader) {
     } catch (e) { log({ trader: trader.name, shadowError: e.message }); }
   }
   const shadowHold = !!(shadow && shadow.holding);
-  if (inferOpen && !state.inferOpen) state.inferOpenSince = now;
-  if (!inferOpen) { state.inferOpenSince = null; state.dirInfer = null; }
-  state.inferOpen = inferOpen;
+  // Held = any evidence: equity drift, real open rows, or the shadow estimate.
+  const heldNow = inferOpen || open.length > 0 || shadowHold;
+  if (heldNow && !state.inferOpen) state.inferOpenSince = now;
+  if (!heldNow) { state.inferOpenSince = null; state.dirInfer = null; }
+  state.inferOpen = heldNow;
   // Direction while holding, two weak signals combined:
   //  (1) side of his most recent close (measured 68% for Ethan, 60–91% across
   //      peers — traders mostly re-enter the same way);
@@ -605,6 +607,8 @@ async function check(rootState, trader) {
       state.dirInfer = { side: same ? 'long' : 'short', how: 'drift', at: now };
     }
     if (state.dirRefEq == null || Math.abs(eq - state.dirRefEq) >= 2) { state.dirRefEq = eq; state.dirRefGold = gold; }
+    // Real rows beat every inference (they lag ~1h, but they are true).
+    if (open.length) { const L = open.filter((p) => p.side === 'long').length; state.dirInfer = { side: L * 2 >= open.length ? 'long' : 'short', how: 'open', at: now }; }
     if (!state.dirInfer && shadowHold && shadow.side) state.dirInfer = { side: shadow.side, how: 'shadow', at: now };
     if (!state.dirInfer && closed.length) {
       const last = [...closed].filter((t) => t.closeTime).sort((a, b) => b.closeTime - a.closeTime)[0];
@@ -1167,7 +1171,7 @@ async function check(rootState, trader) {
   const bs = (Array.isArray(state.basisHist) ? state.basisHist : []).slice(-20);
   const basisMed = bs.length ? bs.map((x) => Math.abs(x.close)).sort((a, b) => a - b)[bs.length >> 1] : null;
   return { alerts, eq, open, gold, quietH, burst, histOk, copied: MY_EQUITY > 0,
-    inferOpen, basisMed, dayCloses: state.dayCloses || 0, dayPnlHis: state.dayPnlHis || 0,
+    inferOpen: heldNow, basisMed, dayCloses: state.dayCloses || 0, dayPnlHis: state.dayPnlHis || 0,
     inferOpenSince: state.inferOpenSince, dirInfer: state.dirInfer, shadow: state.shadow || null,
     dayKey: state.dayKey, copyMult, myEqRefOut: state.myEqEstimate || MY_EQUITY,
     name: trader.name, id, daysLeft: state.daysLeft,
@@ -1402,7 +1406,7 @@ async function check(rootState, trader) {
         if (state.sent[key] && Date.now() - state.sent[key] < 120 * 60000) continue;
         const ok = await notify(`⚠️ 他逆勢扛單:同儕 ${Math.round(100 * votes[bias] / tot)}% 在${bias === 'long' ? '做多' : '做空'},他推斷${r.dirInfer.side === 'long' ? '做多' : '做空'} · ${r.name}`,
           `近 ${CFG.peerWindowMin ?? 90} 分鐘同儕平倉:多 ${votes.long} / 空 ${votes.short}\n${who.join('\n')}\n\n` +
-          `他已推斷持倉 ${Math.round((Date.now() - r.inferOpenSince) / 60000)} 分鐘,方向來自${r.dirInfer.how === 'drift' ? '權益 vs 金價反推' : r.dirInfer.how === 'shadow' ? '影子模型' : '最近一筆平倉方向'}(不保證)。\n` +
+          `他已推斷持倉 ${Math.round((Date.now() - r.inferOpenSince) / 60000)} 分鐘,方向來自${r.dirInfer.how === 'drift' ? '權益 vs 金價反推' : r.dirInfer.how === 'shadow' ? '影子模型' : r.dirInfer.how === 'open' ? '公開持倉(真實)' : '最近一筆平倉方向'}(不保證)。\n` +
           `這是「大家順勢賺、他逆勢扛」的紅旗,不是進出訊號。開 App 確認他的實際方向與你的浮虧。`,
           'high', 'warning', false, traderUrl(r.id));
         if (ok) state.sent[key] = Date.now();
