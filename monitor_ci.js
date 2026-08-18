@@ -387,7 +387,11 @@ async function check(rootState, trader) {
   // fresh replica is the one that moved; a stale one can only sit at an old
   // value. Trade count takes the max (it never goes down).
   let perf = await cfd.performance(id);
-  if (MY_EQUITY > 0 && !state.openViewAlive) {
+  // Fallbacks run whenever the open view shows nothing — "alive" yesterday
+  // does not mean visible now (the display is his setting), and a blind view
+  // with the fallbacks switched off is total signal loss.
+  const blindNow = !state.openRowsNow;
+  if (MY_EQUITY > 0 && blindNow) {
     const reads = [perf];
     for (let i = 0; i < 2; i++) { await sleep(400); reads.push(await cfd.performance(id).catch(() => null)); }
     const ok = reads.filter((r) => r && Number.isFinite(+r.totalEquity));
@@ -425,6 +429,7 @@ async function check(rootState, trader) {
     await sleep(700);
     open = (await cfd.openPositions(id).catch(() => [])).map(norm);
   }
+  state.openRowsNow = open.length;
 
   // History is the PRIMARY detection path, polled every pass. This is now
   // proven, not precautionary: leg-1 logs caught five polls landing inside a
@@ -559,7 +564,7 @@ async function check(rootState, trader) {
   // perp path since the last KNOWN close; see shadow.js for what it is and is
   // not. Candles live in memory only — 16h at 1m fits one API page.
   let shadow = null;
-  if (trader.shadow && closed.length && !state.openViewAlive) {
+  if (trader.shadow && closed.length && blindNow) {
     try {
       const cache = (globalThis.__candles = globalThis.__candles || new Map());
       const r = await pub(`/api/v2/mix/market/candles?symbol=XAUUSDT&productType=USDT-FUTURES&granularity=1m&endTime=${now}&limit=1000`);
