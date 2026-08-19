@@ -62,6 +62,10 @@ App → 跟單 → TraderEthan → **停止跟單** = 立刻市價平掉所有�
 
 他的 `totalEquity` 是 `****` → 比例、手數台階、懸崖、權益漂移推斷、浮虧推估、掃錢換算**全部停用**。你的手數由 config 的 `myLotPerBase`(他 0.01 手 → 你 X 手,從你的成交反推)驅動「你約」換算;他每次 0.01 手固定,所以這個數字穩定。仍有效:平倉通知、公開持倉(若他顯示)、同儕交叉、數據/週末時鐘、對帳提醒。每次你調整跟單金額 → 回報新成交手數,我更新 `myLotPerBase`。
 
+## 螢幕幫手(本機,2026-08-19 起)
+
+`~/Money/bitget-monitor/screen-helper/`:你在 Chrome 登入並停在 Copy details → Positions;幫手每 30 秒截那個視窗 → macOS Vision OCR → 📗 你的開倉(秒級)/ 📕 平倉 / 🔴 疑似停損 / 🚨 真實浮虧 / 🧭 同向 ≥8 腿 / ⚠️ 被登出。不碰 cookie、不對 Bitget 發請求。心跳走 healthchecks 第二個 check;DOWN = Mac 睡了或 Chrome 關了。重登:在那個視窗登入即可。設定見該目錄 README。
+
 ## 監控讀不到的東西(結構限制)
 
 2026-08-18 已驗證關閉的路:跟單子帳戶不能登入 MT5(官方:Copiers cannot log in directly to the MT5 copy account)→ MetaApi 不可行;App 找不到跟單開/平倉 Email 通知;`aum` 每小時快取不含浮動。用戶決定不跑本機瀏覽器幫手 → 你的 App 是唯一真相。
