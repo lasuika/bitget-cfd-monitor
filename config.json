@@ -80,7 +80,7 @@
   {
    "name": "星火-起航万倍",
    "portfolioId": "1471086769152733184",
-   "myEquity": 1989.56,
+   "myEquity": 0,
    "myEquityAt": "2026-08-18",
    "baseLot": 0.15,
    "variableLots": true,
@@ -115,7 +115,46 @@
    "_fills": "2026-08-18 00:31 起跟;首批 3 筆 0.14/0.04/0.14 手(他 0.15/0.05/0.15,比例約 0.93–0.99),分潤 30%,費 $6/手",
    "shadow": true,
    "showsPositions": true,
-   "maxLotPerTrade": 0.14
+   "maxLotPerTrade": 0.14,
+   "_note2": "2026-08-19 用戶改跟百倍稳健版,星火轉 watch-only"
+  },
+  {
+   "name": "百倍计划稳健版",
+   "portfolioId": "1448402338407530496",
+   "myEquity": 0,
+   "myEquityAt": "2026-08-19",
+   "baseLot": 0.01,
+   "hiddenEquity": true,
+   "showsPositions": true,
+   "myLotPerBase": 0,
+   "lossAlertUsd": 5,
+   "ddAlertHisUsd": 30,
+   "stopPerOrder": null,
+   "maxLotPerTrade": null,
+   "levWarn": 55,
+   "levCrit": 80,
+   "activeHoursUtc": [
+    1,
+    2,
+    3,
+    7,
+    8,
+    11,
+    12,
+    13,
+    14,
+    15
+   ],
+   "deadHoursUtc": [
+    10,
+    18,
+    21,
+    22,
+    23
+   ],
+   "capPolicy": "fixed",
+   "capReviewAtTrades": 500,
+   "_note": "權益隱藏(****):比例/台階/漂移/浮虧推估全停用;你的手數由 myLotPerBase(他 0.01 手 → 你 X 手,從你的成交反推)決定。300 筆 0.01 手固定、勝率 96%、最差 -2.87、零虧損日、最多 8 單併發、持倉中位 6 分。MY_EQUITY_4 覆寫權益。"
   }
  ],
  "cliffWarnDays": 14,
@@ -212,6 +251,10 @@
   {
    "name": "星火-起航万倍",
    "portfolioId": "1471086769152733184"
+  },
+  {
+   "name": "百倍标准版",
+   "portfolioId": "1458579156271902720"
   }
  ],
  "peerPollMin": 10,

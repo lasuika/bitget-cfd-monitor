@@ -391,7 +391,7 @@ async function check(rootState, trader) {
   // does not mean visible now (the display is his setting), and a blind view
   // with the fallbacks switched off is total signal loss.
   const blindNow = !state.openRowsNow;
-  if (MY_EQUITY > 0 && blindNow) {
+  if (MY_EQUITY > 0 && blindNow && !trader.hiddenEquity) {
     const reads = [perf];
     for (let i = 0; i < 2; i++) { await sleep(400); reads.push(await cfd.performance(id).catch(() => null)); }
     const ok = reads.filter((r) => r && Number.isFinite(+r.totalEquity));
@@ -411,8 +411,10 @@ async function check(rootState, trader) {
       perf = pool.reduce((best, r) => Math.abs(+r.totalEquity - ref) > Math.abs(+best.totalEquity - ref) ? r : best, pool[0]);
       log({ trader: trader.name, replicaSpread: eqs.map((v) => +v.toFixed(2)), picked: +(+perf.totalEquity).toFixed(2) });
     }
-    perf.totalTrades = String(Math.max(...ok.map((r) => +r.totalTrades || 0)));
-    perf.lastOrderTime = String(Math.max(...ok.map((r) => +r.lastOrderTime || 0)));
+    if (ok.length) {
+      perf.totalTrades = String(Math.max(...ok.map((r) => +r.totalTrades || 0)));
+      perf.lastOrderTime = String(Math.max(...ok.map((r) => +r.lastOrderTime || 0)));
+    }
   }
 
   // The open view is blind for anonymous callers (proven: five polls inside a
@@ -495,7 +497,15 @@ async function check(rootState, trader) {
          `加碼梯/部位過久/浮虧警報從現在起真的有作用。` });
   }
 
-  const eq = +perf.totalEquity;
+  // Some elite traders hide equity ("****"). Everything denominated in his
+  // equity — ratio, lot steps, cliffs, drift inference, float estimate, sweep
+  // conversion — is meaningless for them; eq=0 makes those blocks skip, and
+  // your lot size comes from trader.myLotPerBase (what you actually got per
+  // one of his base lots, read off your own fills) instead.
+  const eqRaw = +perf.totalEquity;
+  const eqHidden = !Number.isFinite(eqRaw) || !!trader.hiddenEquity;
+  const eq = eqHidden ? 0 : eqRaw;
+  if (eqHidden && trader.myLotPerBase > 0) state.curMyLot = Math.min(+trader.myLotPerBase, lotCap);
   const lastOrder = +perf.lastOrderTime;
 
   // Sweeps and crowd flight, every 15 minutes for copied traders. His equity
@@ -737,7 +747,11 @@ async function check(rootState, trader) {
   // your copy of a given order is floor(hisLots x ratio x 100)/100, capped.
   // For a fixed-lot trader this equals copyMult at his base lot.
   const ratioNow = MY_EQUITY > 0 && eq > 0 ? (state.myEqEstimate || MY_EQUITY) / eq : 0;
-  const myLotFor = (lots) => (ratioNow > 0 && lots > 0) ? Math.min(Math.floor(lots * ratioNow * 100) / 100, lotCap) : 0;
+  const myLotFor = (lots) => {
+    if (!(lots > 0)) return 0;
+    if (eqHidden) return trader.myLotPerBase > 0 ? Math.min(Math.floor(lots / baseLot * trader.myLotPerBase * 100 + 1e-9) / 100, lotCap) : 0;
+    return ratioNow > 0 ? Math.min(Math.floor(lots * ratioNow * 100) / 100, lotCap) : 0;
+  };
   const multFor = (lots) => (lots > 0 ? myLotFor(lots) / lots : 0);
   if (closed.length) {
     const fresh = closed.filter((t) => t.closeTime && !known[t.id]);
@@ -1175,7 +1189,7 @@ async function check(rootState, trader) {
     inferOpenSince: state.inferOpenSince, dirInfer: state.dirInfer, shadow: state.shadow || null,
     dayKey: state.dayKey, copyMult, myEqRefOut: state.myEqEstimate || MY_EQUITY,
     name: trader.name, id, daysLeft: state.daysLeft,
-    ratio: MY_EQUITY > 0 ? (state.myEqEstimate || MY_EQUITY) / eq : null,
+    ratio: MY_EQUITY > 0 && eq > 0 ? (state.myEqEstimate || MY_EQUITY) / eq : null,
     myEq: state.myEqEstimate || MY_EQUITY };
 }
 
