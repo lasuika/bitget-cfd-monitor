@@ -1,124 +1,6 @@
 {
  "traders": [
   {
-   "name": "ManuGoldPrime",
-   "portfolioId": "1423679390962597888",
-   "myEquity": 0,
-   "myEquityAt": "2026-08-14",
-   "_note": "暫停跟單中(2026-08-14)。仍持續監控他的開單與權益,方便日後決定是否回來。",
-   "activeHoursUtc": [
-    0,
-    1,
-    7,
-    8,
-    9,
-    11,
-    12,
-    13,
-    14,
-    16,
-    17,
-    18,
-    19,
-    20,
-    22,
-    23
-   ],
-   "deadHoursUtc": [
-    3,
-    4,
-    5,
-    21
-   ],
-   "baseLot": 0.01,
-   "lossAlertUsd": 100
-  },
-  {
-   "name": "TraderEthan",
-   "portfolioId": "1469255871432253440",
-   "myEquity": 0,
-   "myEquityAt": "2026-08-14",
-   "_note": "2026-08-18 已停止跟單(浮虧事件後),改 watch-only",
-   "activeHoursUtc": [
-    0,
-    1,
-    2,
-    3,
-    5,
-    6,
-    8,
-    12,
-    13,
-    14
-   ],
-   "deadHoursUtc": [
-    15,
-    16,
-    17,
-    18,
-    19,
-    20,
-    21,
-    22,
-    23
-   ],
-   "maxLotPerTrade": 0.1,
-   "stopPerOrder": 300,
-   "levWarn": 55,
-   "levCrit": 80,
-   "_measured": "44 筆:活躍時段涵蓋 95%,UTC 15-23 從未開單;同時最多 5 單(你 0.50 手 = 108x)",
-   "_stop": "2026-08-14 依 MAE 精算從 200 調升:兩筆 $18.2 貼著 $20 觸發線,月誤殺 2-3 次;$30 在雜訊包絡外且仍先於清算($40)",
-   "baseLot": 0.02,
-   "lossAlertUsd": 5,
-   "ddAlertHisUsd": 40,
-   "capPolicy": "fixed",
-   "capReviewAtTrades": 100,
-   "_capPolicy": "2026-08-17 用戶決定:固定派。Max lot 釘在 0.10,獲利不滾入,到 100 筆再重新評估。📈 調高建議在此之前靜音。",
-   "flatEqSeed": 400,
-   "_flatEqSeed": "2026-08-17 15:54 平倉後他的權益 = $400.00(空倉基準)。首次啟動用它,之後每次平倉自動更新。"
-  },
-  {
-   "name": "星火-起航万倍",
-   "portfolioId": "1471086769152733184",
-   "myEquity": 0,
-   "myEquityAt": "2026-08-18",
-   "baseLot": 0.15,
-   "variableLots": true,
-   "lossAlertUsd": 10,
-   "ddAlertHisUsd": 150,
-   "stopPerOrder": 300,
-   "levWarn": 55,
-   "levCrit": 80,
-   "activeHoursUtc": [
-    1,
-    2,
-    3,
-    8,
-    9,
-    12,
-    14,
-    15,
-    16,
-    17,
-    18,
-    19,
-    22
-   ],
-   "deadHoursUtc": [
-    20,
-    21
-   ],
-   "capPolicy": "fixed",
-   "capReviewAtTrades": 300,
-   "_note": "6 天歷史、30 單併發、0.01–0.15 手加碼梯、最深浮虧 -$808(權益 60%)、單部位最深 -$41/oz。baseLot=最常用 0.15(61/112 筆)。myEquity 由 MY_EQUITY_3 覆寫。",
-   "profitShare": 0.3,
-   "_fills": "2026-08-18 00:31 起跟;首批 3 筆 0.14/0.04/0.14 手(他 0.15/0.05/0.15,比例約 0.93–0.99),分潤 30%,費 $6/手",
-   "shadow": true,
-   "showsPositions": true,
-   "maxLotPerTrade": 0.14,
-   "_note2": "2026-08-19 用戶改跟百倍稳健版,星火轉 watch-only"
-  },
-  {
    "name": "百倍计划稳健版",
    "portfolioId": "1448402338407530496",
    "myEquity": 1398.08,
@@ -227,12 +109,8 @@
  "ecoHotMinAfter": 15,
  "peers": [
   {
-   "name": "ManuGoldPrime",
-   "portfolioId": "1423679390962597888"
-  },
-  {
-   "name": "百倍计划稳健",
-   "portfolioId": "1448402338407530496"
+   "name": "星火-起航万倍",
+   "portfolioId": "1471086769152733184"
   },
   {
    "name": "InsaneShark",
@@ -247,20 +125,33 @@
    "portfolioId": "1460931727875661824"
   },
   {
-   "name": "BG最稳带单员",
-   "portfolioId": "1468738181542195200"
+   "name": "职业玩家头皮哥",
+   "portfolioId": "1466714274920411136"
   },
   {
-   "name": "星火-起航万倍",
-   "portfolioId": "1471086769152733184"
+   "name": "天才交易员歪腻",
+   "portfolioId": "1471678660969775104"
   },
   {
-   "name": "百倍标准版",
-   "portfolioId": "1458579156271902720"
+   "name": "kk稳健版",
+   "portfolioId": "1469426258216497152"
+  },
+  {
+   "name": "2ndManuGoldPrime",
+   "portfolioId": "1468953845062197248"
+  },
+  {
+   "name": "开牛量化",
+   "portfolioId": "1464883934388039680"
+  },
+  {
+   "name": "ManuGoldPrime",
+   "portfolioId": "1423679390962597888"
   }
  ],
  "peerPollMin": 10,
  "peerWindowMin": 90,
  "peerMinCloses": 5,
- "peerMinHoldMin": 30
+ "peerMinHoldMin": 30,
+ "_peersNote": "2026-08-19 依近 7 天成交頻率(每位 ≥22 筆/週)與活躍度重選;排除同操盤手的百倍标准版。"
 }

@@ -28,7 +28,7 @@ on:
         type: boolean
         default: false
       my_equity:
-        description: 'Override TraderEthan (trader 2) equity for this run (blank = use variable)'
+        description: 'Override trader 1 equity for this run (blank = use variable)'
         type: string
         default: ''
 
@@ -126,16 +126,9 @@ jobs:
           # One variable per copy account — each trader you follow gets its own
           # MT5 account, funded and sized independently, so each needs its own
           # equity figure for the cliff maths to mean anything.
-          MY_EQUITY_1: ${{ vars.MY_EQUITY_1 }}
+          # Trader 1 is the only copied account now (百倍稳健版); the dispatch input overrides it.
+          MY_EQUITY_1: ${{ inputs.my_equity != '' && inputs.my_equity || vars.MY_EQUITY_1 }}
           MY_EQUITY_AT_1: ${{ vars.MY_EQUITY_AT_1 }}
-          # The ad-hoc override points at trader 2 — the account with money in
-          # it — not trader 1, which is watch-only.
-          MY_EQUITY_2: ${{ inputs.my_equity != '' && inputs.my_equity || vars.MY_EQUITY_2 }}
-          MY_EQUITY_AT_2: ${{ vars.MY_EQUITY_AT_2 }}
-          MY_EQUITY_3: ${{ vars.MY_EQUITY_3 }}
-          MY_EQUITY_AT_3: ${{ vars.MY_EQUITY_AT_3 }}
-          MY_EQUITY_4: ${{ vars.MY_EQUITY_4 }}
-          MY_EQUITY_AT_4: ${{ vars.MY_EQUITY_AT_4 }}
           # 320, not 330: the deadline is only checked between passes, and a
           # fully degraded pass (retry storms x2 traders) can run 20+ minutes —
           # 330 could overshoot the 350-minute job timeout and lose the final
