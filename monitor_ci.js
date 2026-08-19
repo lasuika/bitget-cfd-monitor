@@ -489,6 +489,24 @@ async function check(rootState, trader) {
     }
     state.openSeeded = true;
   }
+  // Leg count from REAL open rows (when he publishes positions). For 百倍 the
+  // killer pattern is many same-side legs, not big legs: 07-01 was 15 shorts
+  // laddered $94 apart — cap and per-order stops both fail there. His recent
+  // ceiling is 4; crossing legsCrit means the regime changed.
+  if (open.length && trader.legsCrit) {
+    const L = open.filter((p) => p.side === 'long').length, S = open.length - L;
+    const mx = Math.max(L, S);
+    if (mx >= trader.legsCrit && !(state.legsWarned >= mx)) {
+      state.legsWarned = mx;
+      alerts.push({ key: `legs-${mx}`, p: 'urgent', crit: true, cool: 60, tags: 'rotating_light',
+        t: `🧭 同向 ${mx} 腿(${L} 多 / ${S} 空)`,
+        b: `他在疊加碼梯,超過近期上限(${trader.legsCrit - 1})。\n` +
+           (MY_EQUITY > 0 ? `每腿各自 ${trader.stopPerOrder || '?'} 停損:${mx} 腿 = 最多 -${mx * (+trader.stopPerOrder || 0)}。\n` : '') +
+           `入場 ${n(Math.min(...open.map((p) => p.openPrice)))} ~ ${n(Math.max(...open.map((p) => p.openPrice)))}。\n` +
+           `這是 6 月模式回來的訊號;考慮 App → 停止跟單。` });
+    }
+    if (mx < trader.legsCrit) state.legsWarned = 0;
+  } else if (!open.length) state.legsWarned = 0;
   if (open.length && !state.openViewAlive) {
     state.openViewAlive = true;
     alerts.push({ key: 'open-view-alive', p: 'high', tags: 'eyes',
@@ -828,6 +846,22 @@ async function check(rootState, trader) {
             `${t.profit >= 0 ? '+' : ''}$${n(t.profit)} (${n((t.closeTime - t.openTime) / 60000, 1)} 分)`
           ).join('\n') + (fresh.length > 5 ? `\n…另 ${fresh.length - 5} 筆` : '') });
 
+        // Lagging leg-count signal from closes: a batch of ≥legsCrit same-side
+        // positions closed within 2 minutes means he had that many open.
+        if (trader.legsCrit) {
+          for (const side of ['long', 'short']) {
+            const batch = fresh.filter((t) => t.side === side);
+            if (batch.length >= trader.legsCrit) {
+              const ts = batch.map((t) => t.closeTime).sort((a, b) => a - b);
+              if (ts[ts.length - 1] - ts[0] <= 2 * 60000) {
+                alerts.push({ key: `legs-closed-${ts[0]}`, p: 'high', tags: 'warning',
+                  t: `🧭 他剛一次平掉 ${batch.length} 腿${side === 'long' ? '多' : '空'}`,
+                  b: `同向 ${batch.length} 腿同時平倉,合計 ${batch.reduce((a, t) => a + t.profit, 0) >= 0 ? '+' : ''}${n(batch.reduce((a, t) => a + t.profit, 0))}。\n` +
+                     `代表他持倉中疊到了 ${batch.length} 腿(超過近期上限 ${trader.legsCrit - 1})—— 加碼梯模式回來了,之後每一段都可能更深。` });
+              }
+            }
+          }
+        }
         // Back-from-break bell, driven by what we can actually see (closes).
         // The old version keyed on open-view rows and could never fire.
         if (state.wasQuiet) {
