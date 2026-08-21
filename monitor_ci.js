@@ -863,10 +863,10 @@ async function check(rootState, trader) {
             if (batch.length >= trader.legsCrit) {
               const ts = batch.map((t) => t.closeTime).sort((a, b) => a - b);
               if (ts[ts.length - 1] - ts[0] <= 2 * 60000) {
-                alerts.push({ key: `legs-closed-${ts[0]}`, p: 'high', tags: 'warning',
+                alerts.push({ key: `legs-closed-${ts[0]}`, p: 'urgent', crit: true, cool: 60, tags: 'rotating_light',
                   t: `🧭 他剛一次平掉 ${batch.length} 腿${side === 'long' ? '多' : '空'}`,
                   b: `同向 ${batch.length} 腿同時平倉,合計 ${batch.reduce((a, t) => a + t.profit, 0) >= 0 ? '+' : ''}${n(batch.reduce((a, t) => a + t.profit, 0))}。\n` +
-                     `代表他持倉中疊到了 ${batch.length} 腿(超過近期上限 ${trader.legsCrit - 1})—— 加碼梯模式回來了,之後每一段都可能更深。` });
+                     `代表他持倉中疊到了 ${batch.length} 腿(超過近期上限 ${trader.legsCrit - 1})—— 加碼梯模式回來了。\n你的規則:08-21 已豁免一次(13 腿),這次 = 停止跟單。` });
               }
             }
           }
