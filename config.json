@@ -66,16 +66,16 @@
    "_capNote": "2026-08-21 用戶自行把 App Max lot 設為 0.10(超前 cap 階梯;比例 ~3x 下實際成交仍 0.03,cap 目前不咬合)"
   },
   {
-   "name": "InsaneShark",
-   "portfolioId": "1469037429152202752",
+   "name": "开牛量化",
+   "portfolioId": "1464883934388039680",
    "myEquity": 0,
    "baseLot": 0.01,
-   "hiddenEquity": true,
+   "hiddenEquity": false,
    "showsPositions": true,
    "watchQuiet": true,
-   "lossAlertUsd": 10,
+   "lossAlertUsd": 25,
    "ddAlertHisUsd": 60,
-   "legsCrit": 5,
+   "legsCrit": 3,
    "activeHoursUtc": [
     0,
     1,
@@ -102,7 +102,7 @@
     20,
     21
    ],
-   "_note": "2026-08-21 觀察中(2 週):百倍+半趨勢候選。趨勢日 $83/0.01手/天、順勢 55%、勝率 89%、≤4 腿、他最深浮虧 -$221。watchQuiet:只留 hist-dead/sizechange/legs 警報,週日摘要。"
+   "_note": "2026-08-21 起觀察(第二倉候選)。1 腿、0.01–0.02、勝率 71%、會認賠(最差 -21)、最深浮虧 -23、權益 ~$227 會掃錢。legsCrit 3 = 他從未 ≥2 腿。"
   }
  ],
  "cliffWarnDays": 14,
@@ -197,12 +197,12 @@
    "portfolioId": "1468953845062197248"
   },
   {
-   "name": "开牛量化",
-   "portfolioId": "1464883934388039680"
-  },
-  {
    "name": "ManuGoldPrime",
    "portfolioId": "1423679390962597888"
+  },
+  {
+   "name": "InsaneShark",
+   "portfolioId": "1469037429152202752"
   }
  ],
  "peerPollMin": 10,
