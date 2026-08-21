@@ -802,6 +802,10 @@ async function check(rootState, trader) {
         // Daily tally for the evening reconciliation nudge (UTC day key).
         const dayKey = new Date(now).toISOString().slice(0, 10);
         if (state.dayKey !== dayKey) { state.dayKey = dayKey; state.dayCloses = 0; state.dayPnlHis = 0; }
+        // Weekly tally (user dollars), reset Monday 00 UTC, reported Sunday.
+        const wkKey = (() => { const d = new Date(now); const day = (d.getUTCDay() + 6) % 7; const m = new Date(d - day * 864e5); return m.toISOString().slice(0, 10); })();
+        if (state.wkKey !== wkKey) { state.wkKey = wkKey; state.wkPnlUser = 0; }
+        state.wkPnlUser = (state.wkPnlUser || 0) + fresh.reduce((s2, t2) => s2 + t2.profit * multFor(t2.lots), 0);
         state.dayCloses += fresh.length;
         state.dayPnlHis += realised;
 
@@ -1236,6 +1240,7 @@ async function check(rootState, trader) {
   return { alerts, eq, open, gold, quietH, burst, histOk, copied: MY_EQUITY > 0,
     inferOpen: heldNow, basisMed, dayCloses: state.dayCloses || 0, dayPnlHis: state.dayPnlHis || 0,
     inferOpenSince: state.inferOpenSince, dirInfer: state.dirInfer, shadow: state.shadow || null,
+    weekPnlUser: state.wkPnlUser || 0,
     dayKey: state.dayKey, copyMult, myEqRefOut: state.myEqEstimate || MY_EQUITY,
     name: trader.name, id, daysLeft: state.daysLeft,
     ratio: MY_EQUITY > 0 && eq > 0 ? (state.myEqEstimate || MY_EQUITY) / eq : null,
@@ -1485,9 +1490,17 @@ async function check(rootState, trader) {
       if (rs.length && state.reconNag !== today) {
         state.reconNag = today;
         const lines = rs.map((r) => `${r.name}:今日 ${r.dayCloses} 筆,他 ${r.dayPnlHis >= 0 ? '+' : ''}$${n(r.dayPnlHis)} → 你估 ${r.dayPnlHis * r.copyMult >= 0 ? '+' : ''}$${n(r.dayPnlHis * r.copyMult)}(分潤前)。監控推估你的權益 ≈ $${n(r.myEqRefOut)}`);
-        await notify('🧾 今日對帳(監控看不到你的帳戶)',
-          lines.join('\n') + `\n\n開 App 看跟單帳戶權益;若差超過 5%,代表有單沒跟到、停損被打、或跟單被暫停 —— 回我一聲。`,
-          'default', 'receipt');
+        // Sunday adds the withdrawal ritual: the plan is 25% out / 75%
+        // compounding until the ~4-month review (user: no need to spend yet).
+        const sunday = nw.getUTCDay() === 0;
+        const weekProfit = sunday ? rs.reduce((acc, r) => acc + (r.weekPnlUser || 0), 0) : 0;
+        await notify(sunday ? '🧾 週日結算 + 提領儀式' : '🧾 今日對帳(監控看不到你的帳戶)',
+          lines.join('\n') +
+          (sunday ? `\n\n📤 本週你的估計獲利 ${weekProfit >= 0 ? '+' : ''}${n(weekProfit)}(分潤前)。\n` +
+                    `計畫:獲利 ≥$50 → 提出 25%(≈ ${n(Math.max(weekProfit, 0) * 0.7 * 0.25)},分潤後口徑)、75% 留著滾。\n` +
+                    `他有持倉就等平倉再提;提完把新權益丟給我。` : '') +
+          `\n\n開 App 看跟單帳戶權益;若差超過 5%,代表有單沒跟到、停損被打、或跟單被暫停 —— 回我一聲。`,
+          sunday ? 'high' : 'default', 'receipt');
       }
     }
 
