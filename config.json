@@ -12,7 +12,7 @@
    "lossAlertUsd": 5,
    "ddAlertHisUsd": 30,
    "stopPerOrder": null,
-   "maxLotPerTrade": null,
+   "maxLotPerTrade": 0.03,
    "levWarn": 55,
    "levCrit": 80,
    "activeHoursUtc": [
@@ -47,7 +47,22 @@
    "profitShare": 0.3,
    "_fills": "2026-08-19 13:57 起跟;首批 4 筆 0.03 手(他 0.01 → 你 0.03),分潤 20%",
    "legsCrit": 5,
-   "_hours": "自述盯盤 09–12、14–24 台北(UTC 1–4、6–16);00–08 台北不交易"
+   "_hours": "自述盯盤 09–12、14–24 台北(UTC 1–4、6–16);00–08 台北不交易",
+   "capSteps": [
+    {
+     "eq": 3100,
+     "cap": 0.06
+    },
+    {
+     "eq": 6200,
+     "cap": 0.09
+    },
+    {
+     "eq": 12400,
+     "cap": 0.18
+    }
+   ],
+   "_capRule": "權益翻倍才手動加 cap(App → Settings → Max lot);50% 獲利再投入。"
   }
  ],
  "cliffWarnDays": 14,

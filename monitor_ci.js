@@ -1164,6 +1164,21 @@ async function check(rootState, trader) {
   }
   state.lastEquity = eq;
   if (trader.variableLots && !state.lotRefEq && eq > 0) state.lotRefEq = eq;
+  // Cap ladder: the user's plan is 50% profit reinvest and a cap raise only
+  // when equity doubles ($3,100 → 0.06, $6,200 → 0.09). The exchange-side Max
+  // lot never moves by itself, so crossing a step earns a nudge — once per step.
+  if (MY_EQUITY > 0 && Array.isArray(trader.capSteps)) {
+    const due = trader.capSteps.filter((x) => MY_EQUITY >= x.eq).pop();
+    const cur = +trader.maxLotPerTrade || 0;
+    if (due && due.cap > cur && state.capStepNagged !== due.cap) {
+      state.capStepNagged = due.cap;
+      alerts.push({ key: `capstep-${Math.round(due.cap * 100)}`, p: 'high', tags: 'arrow_up',
+        t: `📈 權益到 ${n(MY_EQUITY, 0)} — 依計畫該把 Max lot 調到 ${n(due.cap)}`,
+        b: `你的規則:權益翻倍才加 cap。目前 App 的 Max lot ${n(cur)} → 建議 ${n(due.cap)}。\n` +
+           `App → 跟單 → Settings → Max lot per copy trade;改完回報,我同步 config。\n` +
+           `(不改也安全 — 只是獲利速度停在原地。)` });
+    }
+  }
   // Sample maturity: 44 trades was a snapshot, not a record. Nudge a re-run of
   // the full analysis as the sample grows instead of trusting day-7 statistics.
   const tot = +perf.totalTrades || 0;
