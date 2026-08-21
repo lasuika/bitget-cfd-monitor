@@ -804,8 +804,13 @@ async function check(rootState, trader) {
         if (state.dayKey !== dayKey) { state.dayKey = dayKey; state.dayCloses = 0; state.dayPnlHis = 0; }
         // Weekly tally (user dollars), reset Monday 00 UTC, reported Sunday.
         const wkKey = (() => { const d = new Date(now); const day = (d.getUTCDay() + 6) % 7; const m = new Date(d - day * 864e5); return m.toISOString().slice(0, 10); })();
-        if (state.wkKey !== wkKey) { state.wkKey = wkKey; state.wkPnlUser = 0; }
+        if (state.wkKey !== wkKey) { state.wkKey = wkKey; state.wkPnlUser = 0; state.wkPnlHis = 0; state.wkN = 0; state.wkLoss = 0; state.wkWorst = 0; state.wkMaxBatch = 0; state.wkMaxLot = 0; }
         state.wkPnlUser = (state.wkPnlUser || 0) + fresh.reduce((s2, t2) => s2 + t2.profit * multFor(t2.lots), 0);
+        state.wkPnlHis = (state.wkPnlHis || 0) + realised; state.wkN = (state.wkN || 0) + fresh.length;
+        state.wkLoss = (state.wkLoss || 0) + fresh.filter((t2) => t2.profit < 0).length;
+        state.wkWorst = Math.min(state.wkWorst || 0, ...fresh.map((t2) => t2.profit));
+        for (const side of ['long', 'short']) { const b = fresh.filter((t2) => t2.side === side); if (b.length) state.wkMaxBatch = Math.max(state.wkMaxBatch || 0, b.length); }
+        state.wkMaxLot = Math.max(state.wkMaxLot || 0, ...fresh.map((t2) => t2.lots));
         state.dayCloses += fresh.length;
         state.dayPnlHis += realised;
 
@@ -1234,12 +1239,18 @@ async function check(rootState, trader) {
   }
   if (!inferOpen) state.floatHalf = false;
 
+  // Watch-only traders under observation: keep the numbers, drop the noise.
+  // Only the structural alarms survive (history dead, size change, leg batch).
+  if (trader.watchQuiet) {
+    for (let i = alerts.length - 1; i >= 0; i--) if (!/^(hist-dead|sizechange|legs-closed|legs-)/.test(alerts[i].key)) alerts.splice(i, 1);
+  }
   const burst = (state.burstUntil || 0) > now || inferOpen || shadowHold;
   const bs = (Array.isArray(state.basisHist) ? state.basisHist : []).slice(-20);
   const basisMed = bs.length ? bs.map((x) => Math.abs(x.close)).sort((a, b) => a - b)[bs.length >> 1] : null;
   return { alerts, eq, open, gold, quietH, burst, histOk, copied: MY_EQUITY > 0,
     inferOpen: heldNow, basisMed, dayCloses: state.dayCloses || 0, dayPnlHis: state.dayPnlHis || 0,
     inferOpenSince: state.inferOpenSince, dirInfer: state.dirInfer, shadow: state.shadow || null,
+    watchDigest: trader.watchQuiet ? { n: state.wkN || 0, pnl: state.wkPnlHis || 0, loss: state.wkLoss || 0, worst: state.wkWorst || 0, batch: state.wkMaxBatch || 0, maxLot: state.wkMaxLot || 0 } : null,
     weekPnlUser: state.wkPnlUser || 0,
     dayKey: state.dayKey, copyMult, myEqRefOut: state.myEqEstimate || MY_EQUITY,
     name: trader.name, id, daysLeft: state.daysLeft,
@@ -1489,13 +1500,14 @@ async function check(rootState, trader) {
       const rs = results.filter((r) => r.copied && r.dayKey === today && r.dayCloses > 0);
       if (rs.length && state.reconNag !== today) {
         state.reconNag = today;
+        const sunday = nw.getUTCDay() === 0;
+        const watch = results.filter((r) => r.watchDigest && sunday).map((r) => `👀 觀察中 ${r.name}:本週 ${r.watchDigest.n} 筆 ${r.watchDigest.pnl >= 0 ? '+' : ''}${n(r.watchDigest.pnl)}/他,虧 ${r.watchDigest.loss} 筆(最差 ${n(r.watchDigest.worst)}),最大同向批 ${r.watchDigest.batch} 腿,最大單腿 ${n(r.watchDigest.maxLot)} 手`);
         const lines = rs.map((r) => `${r.name}:今日 ${r.dayCloses} 筆,他 ${r.dayPnlHis >= 0 ? '+' : ''}$${n(r.dayPnlHis)} → 你估 ${r.dayPnlHis * r.copyMult >= 0 ? '+' : ''}$${n(r.dayPnlHis * r.copyMult)}(分潤前)。監控推估你的權益 ≈ $${n(r.myEqRefOut)}`);
         // Sunday adds the withdrawal ritual: the plan is 25% out / 75%
         // compounding until the ~4-month review (user: no need to spend yet).
-        const sunday = nw.getUTCDay() === 0;
         const weekProfit = sunday ? rs.reduce((acc, r) => acc + (r.weekPnlUser || 0), 0) : 0;
         await notify(sunday ? '🧾 週日結算 + 提領儀式' : '🧾 今日對帳(監控看不到你的帳戶)',
-          lines.join('\n') +
+          lines.concat(watch).join('\n') +
           (sunday ? `\n\n📤 本週你的估計獲利 ${weekProfit >= 0 ? '+' : ''}${n(weekProfit)}(分潤前)。\n` +
                     `計畫:獲利 ≥$50 → 提出 25%(≈ ${n(Math.max(weekProfit, 0) * 0.7 * 0.25)},分潤後口徑)、75% 留著滾。\n` +
                     `他有持倉就等平倉再提;提完把新權益丟給我。` : '') +

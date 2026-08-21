@@ -64,6 +64,45 @@
    ],
    "_capRule": "B 翻倍階梯(2026-08-21 定案):權益翻倍才加 cap;$5k 前獲利全滾、之後週日提 50%。觀察期滿若信任度夠 → 切 C(cap 貼權益 3x)。App 現設 0.10(先行,$5,100 前不咬合)。",
    "_capNote": "2026-08-21 用戶自行把 App Max lot 設為 0.10(超前 cap 階梯;比例 ~3x 下實際成交仍 0.03,cap 目前不咬合)"
+  },
+  {
+   "name": "InsaneShark",
+   "portfolioId": "1469037429152202752",
+   "myEquity": 0,
+   "baseLot": 0.01,
+   "hiddenEquity": true,
+   "showsPositions": true,
+   "watchQuiet": true,
+   "lossAlertUsd": 10,
+   "ddAlertHisUsd": 60,
+   "legsCrit": 5,
+   "activeHoursUtc": [
+    0,
+    1,
+    2,
+    3,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    22,
+    23
+   ],
+   "deadHoursUtc": [
+    20,
+    21
+   ],
+   "_note": "2026-08-21 觀察中(2 週):百倍+半趨勢候選。趨勢日 $83/0.01手/天、順勢 55%、勝率 89%、≤4 腿、他最深浮虧 -$221。watchQuiet:只留 hist-dead/sizechange/legs 警報,週日摘要。"
   }
  ],
  "cliffWarnDays": 14,
@@ -133,10 +172,6 @@
  "ecoHotMinBefore": 5,
  "ecoHotMinAfter": 15,
  "peers": [
-  {
-   "name": "InsaneShark",
-   "portfolioId": "1469037429152202752"
-  },
   {
    "name": "XAUUSD25-50",
    "portfolioId": "1460833892966621184"
