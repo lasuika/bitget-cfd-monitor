@@ -360,7 +360,11 @@ async function ecoEvents() {
   }
   return ecoCache.events;
 }
-const taipei = (ms) => new Date(ms + 8 * 3600e3).toISOString().slice(11, 16);
+// User relocated to Toronto 2026-08-25. EDT = UTC−4; when DST ends (Nov) flip
+// config.tzOffsetHours to -5 and update the fixed clock times in the messages.
+const TZ_OFF = (CFG.tzOffsetHours ?? -4) * 3600e3;
+const TZ_NAME = CFG.tzName || '多倫多';
+const taipei = (ms) => new Date(ms + TZ_OFF).toISOString().slice(11, 16);
 
 // --- one pass -----------------------------------------------------------
 async function check(rootState, trader) {
@@ -483,7 +487,7 @@ async function check(rootState, trader) {
         t: `📗 他開倉 ${fresh.length} 筆:${fresh.map((p) => `${p.side === 'long' ? '多' : '空'} ${n(p.lots)}`).join('、')}`,
         b: fresh.map((p) => `${p.side === 'long' ? '多' : '空'} ${n(p.lots)} 手 @ ${n(p.openPrice)}` +
              (mine(p.lots) ? `(你約 ${n(mine(p.lots))} 手)` : '') +
-             (p.openTime ? `,開於 ${new Date(p.openTime + 8 * 3600e3).toISOString().slice(11, 16)} 台北(公開視圖延遲 ${Math.round((now - p.openTime) / 60000)} 分)` : '')).join('\n') +
+             (p.openTime ? `,開於 ${new Date(p.openTime + TZ_OFF).toISOString().slice(11, 16)} ${TZ_NAME}(公開視圖延遲 ${Math.round((now - p.openTime) / 60000)} 分)` : '')).join('\n') +
            `\n目前共 ${open.length} 筆持倉` +
            (MY_EQUITY > 0 ? `;你的每單停損 ${trader.stopPerOrder || '?'} 在交易所端。` : '。') });
     }
@@ -547,7 +551,7 @@ async function check(rootState, trader) {
           const big = x.out && pctEq >= 0.1;
           alerts.push({ key: `transfer-${x.t}`, p: big ? 'high' : 'default', tags: x.out ? 'outbox_tray' : 'inbox_tray',
             t: `${x.out ? '💸 他轉出' : '💰 他轉入'} ${n(x.amount, 0)}${big ? ' — 你的手數會放大' : ''}`,
-            b: `${new Date(x.t + 8 * 3600e3).toISOString().slice(5, 16)} 台北 ${x.from} → ${x.to}\n` +
+            b: `${new Date(x.t + TZ_OFF).toISOString().slice(5, 16)} ${TZ_NAME} ${x.from} → ${x.to}\n` +
                (x.out ? `他的權益是你手數的分母:轉出 ${n(pctEq * 100, 0)}% 後,同樣的單你會多跟約 ${n(1 / (1 - Math.min(pctEq, 0.95)), 2)} 倍。\n` +
                         `只有 Max lot 上限能擋。目前上限 ${trader.maxLotPerTrade ? n(+trader.maxLotPerTrade) : '未設'}。` :
                         `他的權益變大 → 同樣的單你跟的手數會縮小。`) });
@@ -1363,7 +1367,7 @@ async function check(rootState, trader) {
       const wk = nw.toISOString().slice(0, 10);
       if (state.friNag !== wk) {
         state.friNag = wk;
-        await notify('🕘 週五晚間檢查:黃金明晨 05:00(台北)休市',
+        await notify('🕘 週五檢查:黃金 17:00(多倫多)休市',
           `目前 ${holdTxt}。休市後整個週末無法停止跟單。\n` +
           `開 App 看一眼跟單帳戶:\n` +
           `• 空倉 → 忽略這則,安心過週末\n` +
@@ -1409,7 +1413,7 @@ async function check(rootState, trader) {
             const mv = g - state.friPerp;
             await notify(`📉 週末跳空預告:永續已比週五收盤 ${mv >= 0 ? '+' : ''}${n(mv)}/oz`,
               `他休市前推斷仍持倉(${state.heldIntoWeekend.join('、')})。\n` +
-              `週一 06:00 台北開盤大約在這附近;每 0.10 手 = ${mv >= 0 ? '+' : ''}${n(mv * 10)}(方向要看他是多是空)。\n` +
+              `週日 18:00 多倫多開盤大約在這附近;每 0.10 手 = ${mv >= 0 ? '+' : ''}${n(mv * 10)}(方向要看他是多是空)。\n` +
               `停損以開盤價成交,擋不住跳空。開盤前你我都動不了,這只是讓你心裡有數。`,
               Math.abs(mv) >= 15 ? 'high' : 'default', 'chart_with_downwards_trend');
           }
@@ -1421,7 +1425,7 @@ async function check(rootState, trader) {
       if (state.wkHoldNote !== wk) {
         state.wkHoldNote = wk;
         await notify('🛌 他抱倉過週末了',
-          `休市前推斷 ${state.heldIntoWeekend.join('、')} 仍持倉。週一 06:00(台北)開盤前你我都動不了。\n` +
+          `休市前推斷 ${state.heldIntoWeekend.join('、')} 仍持倉。週日 18:00(多倫多)開盤前你我都動不了。\n` +
           `開盤瞬間可能跳空,停損以開盤價成交。開 App 確認實際部位與浮動盈虧。`,
           'high', 'sleeping');
       }
@@ -1440,7 +1444,7 @@ async function check(rootState, trader) {
         const k = `${e.t}|${e.title}`;
         if (min > 0 && min <= (CFG.ecoWarnMin ?? 30) && !state.ecoSent[k]) {
           state.ecoSent[k] = Date.now();
-          await notify(`📅 ${Math.round(min)} 分後 ${e.title}(台北 ${taipei(e.t)})`,
+          await notify(`📅 ${Math.round(min)} 分後 ${e.title}(${TZ_NAME} ${taipei(e.t)})`,
             `美國高影響數據。目前 ${holdTxt}。\n` +
             `數據瞬間點差放大、價格可能一根穿過你的停損再拉回;監控在此期間改最快輪詢。`,
             held.length ? 'high' : 'default', 'calendar');
@@ -1452,8 +1456,8 @@ async function check(rootState, trader) {
         if (state.ecoWeek !== wk) {
           state.ecoWeek = wk;
           const list = evs.filter((e) => e.t > Date.now()).sort((a, b) => a.t - b.t)
-            .map((e) => `• ${new Date(e.t + 8 * 3600e3).toISOString().slice(5, 10)} ${taipei(e.t)} ${e.title}`);
-          await notify('📅 本週美國高影響數據(台北時間)',
+            .map((e) => `• ${new Date(e.t + TZ_OFF).toISOString().slice(5, 10)} ${taipei(e.t)} ${e.title}`);
+          await notify('📅 本週美國高影響數據(多倫多時間)',
             list.length ? list.join('\n') : '本週沒有高影響美元數據。', 'default', 'calendar');
         }
       }
@@ -1501,7 +1505,7 @@ async function check(rootState, trader) {
     // Evening reconciliation nudge: the monitor cannot see YOUR account, so
     // once a day, on days with fills, ask for the one number that catches a
     // silent divergence (skipped copies, a hit stop, a paused copy).
-    if (nw.getUTCHours() === 12 && copiedTraders.length) {
+    if (nw.getUTCHours() === 23 && copiedTraders.length) {
       const today = nw.toISOString().slice(0, 10);
       const rs = results.filter((r) => r.copied && r.dayKey === today && r.dayCloses > 0);
       if (rs.length && state.reconNag !== today) {
