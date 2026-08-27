@@ -1136,7 +1136,13 @@ async function check(rootState, trader) {
   //    first CLOSE after a quiet spell — the open view that used to gate it is
   //    blind, so the old condition could never be true. lastOrderTime also lags
   //    hours behind reality, so quietH is a coarse signal, fine for a 12h bar.
-  const quietH = (now - lastOrder) / 3.6e6;
+  // lastOrderTime lags hours on stale replicas; the newest CLOSE in history
+  // is the reliable "he was here" signal. Track it across passes so a pass
+  // with a failed history fetch does not reset the clock.
+  const newestClose = closed.length ? Math.max(...closed.map((t) => t.closeTime || 0)) : 0;
+  if (newestClose > (state.lastSeenClose || 0)) state.lastSeenClose = newestClose;
+  const lastActive = Math.max(state.lastSeenClose || 0, lastOrder || 0);
+  const quietH = lastActive ? (now - lastActive) / 3.6e6 : 0;
   if (quietH >= CFG.quietHours) state.wasQuiet = true;
   if (state.wasQuiet) state.quietPeakH = Math.max(state.quietPeakH || 0, quietH);
 
