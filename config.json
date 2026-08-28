@@ -107,6 +107,26 @@
     21
    ],
    "_note": "2026-08-21 起觀察(第二倉候選)。1 腿、0.01–0.02、勝率 71%、會認賠(最差 -21)、最深浮虧 -23、權益 ~$227 會掃錢。legsCrit 3 = 他從未 ≥2 腿。"
+  },
+  {
+   "name": "爱做交易",
+   "portfolioId": "1464557350984626176",
+   "baseLot": 0.01,
+   "myEquity": 0,
+   "watchQuiet": true,
+   "legsCrit": 3,
+   "showsPositions": true,
+   "note": "2026-08-28 深掃入選,觀察 1-2 週"
+  },
+  {
+   "name": "Mroonll",
+   "portfolioId": "1474310080817016832",
+   "baseLot": 0.03,
+   "myEquity": 0,
+   "watchQuiet": true,
+   "legsCrit": 3,
+   "showsPositions": true,
+   "note": "2026-08-28 深掃入選,觀察 1-2 週"
   }
  ],
  "cliffWarnDays": 14,
