@@ -163,6 +163,26 @@
    "legsCrit": 3,
    "showsPositions": true,
    "note": "2026-09-01 跌勢週優等生(+387、3腿、會認賠);帳齡僅1週,觀察"
+  },
+  {
+   "name": "Workaholics",
+   "portfolioId": "1476189570589442048",
+   "baseLot": 0.01,
+   "myEquity": 0,
+   "watchQuiet": true,
+   "legsCrit": 5,
+   "showsPositions": true,
+   "note": "2026-09-01 跌勢空軍研究:小手數+信念空單36筆"
+  },
+  {
+   "name": "mollygirlcannottrade",
+   "portfolioId": "1476881515318001664",
+   "baseLot": 0.01,
+   "myEquity": 0,
+   "watchQuiet": true,
+   "legsCrit": 5,
+   "showsPositions": true,
+   "note": "2026-09-01 跌勢空軍研究:唯一 pre-dump 佈局者,追蹤重複性"
   }
  ],
  "cliffWarnDays": 14,
