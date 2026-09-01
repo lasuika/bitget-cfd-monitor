@@ -1,6 +1,31 @@
 {
  "traders": [
   {
+   "name": "黄金操盘手socool",
+   "portfolioId": "1469580316759834624",
+   "baseLot": 0.01,
+   "myEquity": 2986.02,
+   "hiddenEquity": true,
+   "showsPositions": true,
+   "myLotPerBase": 0.01,
+   "profitShare": 0.3,
+   "stopPerOrder": 300,
+   "maxLotPerTrade": 0.1,
+   "legsCrit": 5,
+   "ladderSpreadCrit": 20,
+   "capSteps": [
+    {
+     "eq": 6200,
+     "cap": 0.12
+    },
+    {
+     "eq": 12400,
+     "cap": 0.18
+    }
+   ],
+   "note": "2026-08-29 用戶開跟;16 腿型剝頭皮,legsCrit 收緊到 5"
+  },
+  {
    "name": "百倍计划稳健版",
    "portfolioId": "1448402338407530496",
    "myEquity": 3372.58,
