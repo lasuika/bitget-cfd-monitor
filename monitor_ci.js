@@ -360,6 +360,38 @@ async function ecoEvents() {
   }
   return ecoCache.events;
 }
+// COT gold weekly (CFTC Socrata, no key): managed-money vs commercial nets
+// with 3-year percentile context. New report → digest; extreme percentile
+// (≥95 / ≤5) → louder. Tuesday data, published Friday ~15:30 ET — we poll at
+// most every 6h so the digest lands within hours of release.
+async function cotCheck(state) {
+  if (Date.now() - (state.cotTriedAt || 0) < 6 * 3600e3) return;
+  state.cotTriedAt = Date.now();
+  try {
+    const p = "/resource/72hh-3qpy.json?$where=market_and_exchange_names='GOLD - COMMODITY EXCHANGE INC.'&$order=report_date_as_yyyy_mm_dd DESC&$limit=160&$select=report_date_as_yyyy_mm_dd,m_money_positions_long_all,m_money_positions_short_all,prod_merc_positions_long,prod_merc_positions_short,open_interest_all";
+    const rows = await getJson('publicreporting.cftc.gov', encodeURI(p));
+    if (!Array.isArray(rows) || rows.length < 10) return;
+    const seq = rows.map((r) => ({ d: r.report_date_as_yyyy_mm_dd.slice(0, 10), mm: +r.m_money_positions_long_all - +r.m_money_positions_short_all, com: +r.prod_merc_positions_long - +r.prod_merc_positions_short, oi: +r.open_interest_all }));
+    const cur = seq[0];
+    if (state.cotLastReport === cur.d) return;
+    const pct = (arr, v) => Math.round(100 * arr.filter((x) => x <= v).length / arr.length);
+    const mmP = pct(seq.map((x) => x.mm), cur.mm), comP = pct(seq.map((x) => x.com), cur.com);
+    const dMm = seq[1] ? cur.mm - seq[1].mm : 0;
+    const extreme = mmP >= 95 || mmP <= 5 || comP >= 95 || comP <= 5;
+    const k = (v) => `${v >= 0 ? '+' : ''}${(v / 1000).toFixed(1)}k`;
+    await notify(`📊 COT 黃金週報(數據日 ${cur.d})${extreme ? ' ⚠️ 極端持倉' : ''}`,
+      `Managed money 淨部位 ${k(cur.mm)} 口(週變化 ${k(dMm)},3 年百分位 ${mmP}%)\n` +
+      `商業避險 淨部位 ${k(cur.com)} 口(百分位 ${comP}%);總未平倉 ${(cur.oi / 1000).toFixed(0)}k\n` +
+      (extreme
+        ? (mmP >= 95 ? '基金淨多在 3 年極端高位 = 多頭擁擠,回檔時容易連環平倉放大跌勢。'
+          : mmP <= 5 ? '基金淨多在 3 年極端低位 = 空頭擁擠,利多消息容易軋空急拉。'
+            : '商業避險部位在 3 年極端 — 實體金商的方向值得尊重。')
+        : '無極端;僅供方向偏見參考,不構成日內訊號。'),
+      extreme ? 'high' : 'default', 'bar_chart');
+    state.cotLastReport = cur.d;
+  } catch (e) { log({ cotError: e.message }); }
+}
+
 // User relocated to Toronto 2026-08-25. EDT = UTC−4; when DST ends (Nov) flip
 // config.tzOffsetHours to -5 and update the fixed clock times in the messages.
 const TZ_OFF = (CFG.tzOffsetHours ?? -4) * 3600e3;
@@ -1327,6 +1359,7 @@ async function check(rootState, trader) {
   do {
     pass++;
     const results = [];
+    await cotCheck(state);
 
     for (const trader of TRADERS) {
       const tid = trader.portfolioId;
