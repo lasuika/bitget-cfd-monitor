@@ -153,6 +153,16 @@
    "legsCrit": 3,
    "showsPositions": true,
    "note": "2026-08-28 深掃入選,觀察 1-2 週"
+  },
+  {
+   "name": "GoldTrader-2026",
+   "portfolioId": "1475585028101521408",
+   "baseLot": 0.01,
+   "myEquity": 0,
+   "watchQuiet": true,
+   "legsCrit": 3,
+   "showsPositions": true,
+   "note": "2026-09-01 跌勢週優等生(+387、3腿、會認賠);帳齡僅1週,觀察"
   }
  ],
  "cliffWarnDays": 14,
