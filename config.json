@@ -4,13 +4,13 @@
    "name": "黄金操盘手socool",
    "portfolioId": "1469580316759834624",
    "baseLot": 0.01,
-   "myEquity": 2986.02,
+   "myEquity": 1501.9,
    "hiddenEquity": true,
    "showsPositions": true,
    "myLotPerBase": 0.01,
-   "profitShare": 0.3,
+   "profitShare": 0.2,
    "stopPerOrder": 300,
-   "maxLotPerTrade": 0.1,
+   "maxLotPerTrade": 0.02,
    "legsCrit": 5,
    "ladderSpreadCrit": 20,
    "capSteps": [
@@ -23,7 +23,8 @@
      "cap": 0.18
     }
    ],
-   "note": "2026-08-29 用戶開跟;16 腿型剝頭皮,legsCrit 收緊到 5"
+   "note": "08-31 13:39 起跟;固定比例 1:1、分潤 20%、跟單資金 1501.9;建議 Max lot 0.02",
+   "copyMode": "fixed-1x"
   },
   {
    "name": "百倍计划稳健版",
