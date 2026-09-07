@@ -1,6 +1,24 @@
 {
  "traders": [
   {
+   "name": "百倍No3(3ku_No3)",
+   "portfolioId": "1478664460026523648",
+   "baseLot": 0.01,
+   "myEquity": 1536,
+   "hiddenEquity": true,
+   "showsPositions": true,
+   "myLotPerBase": 0.01,
+   "profitShare": 0.15,
+   "stopPerOrder": 300,
+   "maxLotPerTrade": 0.02,
+   "legsCrit": 9,
+   "ladderSpreadCrit": 20,
+   "lossAlertUsd": 15,
+   "ddAlertHisUsd": 60,
+   "copyMode": "fixed-1x",
+   "note": "2026-09-07 用戶決定跟 No3(知情下跟,盡調結論為黑名單:與 No1/No2 同訊號、96.6% 勝率由開帳日 70 張切片刷出、無停損攤平梯、9/4 出現 12 腿、隱藏權益、舊帳刪除重開)。紅線 legsCrit=9 = 用戶標準風險軍規,觸發即無條件停跟。myLotPerBase 待首筆成交反推確認。"
+  },
+  {
    "name": "黄金操盘手socool",
    "portfolioId": "1469580316759834624",
    "baseLot": 0.01,
