@@ -21,6 +21,7 @@
   {
    "name": "黄金操盘手socool",
    "portfolioId": "1469580316759834624",
+   "watchQuiet": true,
    "baseLot": 0.01,
    "myEquity": 1501.9,
    "hiddenEquity": true,
