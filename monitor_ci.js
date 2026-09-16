@@ -623,7 +623,7 @@ async function check(rootState, trader) {
   let inferOpen = eqDrift != null && Math.abs(eqDrift) >= (CFG.openInferUsd ?? 2);
   if (state.openViewAlive) {
     inferOpen = open.length > 0;
-    if (!open.length && eq > 0) { state.flatEq = eq; state.floatWarned = false; state.floatStep = 0; }
+    if (!open.length && eq > 0) { state.flatEq = eq; state.floatWarned = false; state.floatStep = 0; state.floatStepMax = 0; }
   }
   // Shadow-ladder estimate (opt-in per trader). Simulates his ladder from the
   // perp path since the last KNOWN close; see shadow.js for what it is and is
@@ -833,6 +833,7 @@ async function check(rootState, trader) {
         state.flatEq = eq;
         state.floatWarned = false;
         state.floatStep = 0;
+        state.floatStepMax = 0;
         const myEqRef = state.myEqEstimate || MY_EQUITY || 0;
 
         // Daily tally for the evening reconciliation nudge (UTC day key).
@@ -1265,20 +1266,32 @@ async function check(rootState, trader) {
     // version was one-shot per position and stayed silent while his float
     // went from -$54 to -$135 — he had added shorts and your exposure doubled.
     const step = Math.floor(pct / CFG.emergencyFloatPct);
-    if (step >= 1 && step > (state.floatStep || 0)) {
+    const prevStep = state.floatStep || 0;
+    const worstStep = state.floatStepMax || 0;
+    // Ratchet (user rule 2026-09-16): Pushover (crit) ONLY on a NEW WORST band
+    // this episode. A loss that re-deepens to a band already seen (after a
+    // partial recovery) is real but not a record → ntfy only, quiet.
+    let firedStep = false;
+    if (step >= 1 && step > prevStep) {
+      firedStep = true;
+      const newWorst = step > worstStep;
       const stops = Math.ceil(-mine / (+trader.stopPerOrder || 300));
-      state.floatStep = step;
       state.floatWarned = true;
-      alerts.push({ key: `float-drift-${step}`, p: 'urgent', crit: true, cool: 30, tags: 'rotating_light',
-        t: `🚨 他持倉中浮虧 $${n(-eqDrift)} → 你約 -$${n(-mine)}${step > 1 ? '(擴大)' : ''}`,
+      if (newWorst) state.floatStepMax = step;
+      alerts.push({ key: `float-drift-${step}${newWorst ? '' : '-r'}`, p: newWorst ? 'urgent' : 'default', crit: newWorst, cool: 30,
+        tags: newWorst ? 'rotating_light' : 'chart_with_downwards_trend',
+        t: `${newWorst ? '🚨 他持倉中浮虧創新低' : '📉 浮虧再擴大(未破前低)'} $${n(-eqDrift)} → 你約 -$${n(-mine)}`,
         b: `他的權益從平倉基準 $${n(flatEq)} 掉到 $${n(eq)}。\n` +
            `以你的手數推估浮虧 -$${n(-mine)}(權益 ${n(pct * 100, 0)}%)。\n` +
-           (step > 1 ? `比上次警報更深 —— 他很可能加碼了;這麼深至少對應 ${stops} 單的 $${trader.stopPerOrder || 300} 停損。\n` : '') +
+           (newWorst && step > 1 ? `比之前更深 —— 他很可能加碼了;這麼深至少對應 ${stops} 單的 $${trader.stopPerOrder || 300} 停損。\n` : '') +
            `你的每單停損 $${trader.stopPerOrder || '?'} 在交易所端等著;` +
            `要提前出場只能 App → 停止跟單。\n\n` +
            (shadowHold ? `\n影子模型估計:${shadow.n} 腿${shadow.side === 'long' ? '多' : '空'}、均價 ${n(shadow.avg)}、浮動約 ${n(shadow.floatCons)}(保守值;模型準確率 85%)。` : '') +
            `\n(監控看不到持倉,這是從他的權益反推的;權益端點有延遲。開 App 看真實數字。)` });
-    } else if (pct >= CFG.emergencyFloatPct * 0.5 && !state.floatWarned && !state.floatHalf) {
+    }
+    // Track current band each pass (down too) so a recover-then-worsen is detected.
+    state.floatStep = step;
+    if (!firedStep && pct >= CFG.emergencyFloatPct * 0.5 && !state.floatWarned && !state.floatHalf) {
       state.floatHalf = true;
       alerts.push({ key: 'float-half', p: 'high', cool: 60, tags: 'warning',
         t: `⚠️ 他持倉中浮虧 $${n(-eqDrift)} → 你約 -$${n(-mine)}`,
